@@ -55,6 +55,8 @@ def _get_streamlit_secret(name: str) -> Any | None:
         }
         if name in mapped and mapped[name] in supabase:
             return supabase[mapped[name]]
+        if name == "APP_ADMIN_EMAILS" and name in supabase:
+            return supabase[name]
     except Exception:
         return None
 

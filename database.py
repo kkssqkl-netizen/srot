@@ -280,12 +280,27 @@ def ensure_profile(
         "display_name": display_name or email,
         "role": role,
     }
+    service_error: Exception | None = None
+    if role == ROLE_ADMIN:
+        try:
+            client = get_supabase_client(use_service_role=True)
+            client.table("profiles").upsert(payload, on_conflict="id").execute()
+            return get_profile(user_id, access_token) or payload
+        except Exception as exc:
+            service_error = exc
+
+    payload["role"] = ROLE_VIEWER
     try:
-        client = get_supabase_client(use_service_role=True)
-    except Exception:
         client = get_supabase_client(access_token=access_token)
-        payload["role"] = ROLE_VIEWER
-    client.table("profiles").upsert(payload, on_conflict="id").execute()
+        client.table("profiles").upsert(payload, on_conflict="id").execute()
+    except Exception as exc:
+        hint = (
+            "プロフィール作成に失敗しました。Supabase SQL Editorで sql/001_schema.sql を実行し、"
+            "Streamlit Secretsの SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY を確認してください。"
+        )
+        if service_error:
+            hint += f" service_role_keyでの作成も失敗しています: {service_error}"
+        raise RuntimeError(hint) from exc
     return get_profile(user_id, access_token) or payload
 
 

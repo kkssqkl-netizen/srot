@@ -145,7 +145,8 @@ def render_login() -> None:
                     st.rerun()
             except Exception as exc:
                 st.error("ユーザー作成に失敗しました。")
-                st.caption(str(exc))
+                st.warning("SupabaseのSQL未実行、Secrets設定ミス、またはAuthenticationのEmail provider無効が主な原因です。")
+                st.code(str(exc))
 
 
 def require_login() -> dict[str, Any]:
@@ -162,4 +163,3 @@ def require_admin() -> dict[str, Any]:
         st.error("権限不足です。管理者のみ利用できます。")
         st.stop()
     return profile
-
