@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-APP_NAME = "マルハン綾瀬上土棚店・設定狙い分析"
+APP_NAME = "スロット期待値"
 STORE_NAME = "マルハン綾瀬上土棚店"
 ANA_SLO_DOMAIN = "ana-slo.com"
 MIN_IMPORT_INTERVAL_SECONDS = 60
@@ -94,4 +94,3 @@ def get_supabase_settings(require_service_role: bool = False) -> SupabaseSetting
 def get_admin_emails() -> set[str]:
     raw = get_secret("APP_ADMIN_EMAILS", "") or ""
     return {email.strip().lower() for email in raw.split(",") if email.strip()}
-
