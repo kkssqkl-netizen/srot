@@ -7,6 +7,8 @@ that changes in ana-slo markup can be fixed in one place.
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
@@ -22,6 +24,9 @@ from config import (
     DEFAULT_SPECIAL_DAY_SUFFIXES,
     STORE_NAME,
 )
+
+
+_PLAYWRIGHT_BROWSER_INSTALL_ATTEMPTED = False
 
 
 class AnaSloError(Exception):
@@ -179,6 +184,39 @@ def fetch_html_with_requests(source_url: str, timeout: int = 20) -> FetchResult:
     return FetchResult(html=response.text, method="requests", status_code=response.status_code)
 
 
+def _is_missing_playwright_browser_error(error_message: str) -> bool:
+    lowered = error_message.lower()
+    return (
+        "executable doesn't exist" in lowered
+        or "please run the following command to download new browsers" in lowered
+        or "playwright install" in lowered
+    )
+
+
+def _install_playwright_chromium() -> None:
+    global _PLAYWRIGHT_BROWSER_INSTALL_ATTEMPTED
+    if _PLAYWRIGHT_BROWSER_INSTALL_ATTEMPTED:
+        return
+
+    _PLAYWRIGHT_BROWSER_INSTALL_ATTEMPTED = True
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=240,
+        )
+    except Exception as exc:
+        raise FetchError("Playwrightブラウザの自動準備に失敗しました。保存HTMLアップロードを使ってください。") from exc
+
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        if detail:
+            detail = detail[-700:]
+        raise FetchError(f"Playwrightブラウザの自動準備に失敗しました。保存HTMLアップロードを使ってください。{detail}")
+
+
 def fetch_html_with_playwright(source_url: str, timeout_ms: int = 30000) -> FetchResult:
     try:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -186,18 +224,34 @@ def fetch_html_with_playwright(source_url: str, timeout_ms: int = 30000) -> Fetc
     except Exception as exc:
         raise FetchError("Playwright が利用できません。保存HTMLアップロードを使ってください。") from exc
 
-    try:
+    def run_browser() -> FetchResult:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(locale="ja-JP")
-            page.goto(source_url, wait_until="domcontentloaded", timeout=timeout_ms)
-            page.wait_for_timeout(1500)
-            html = page.content()
-            browser.close()
-            return FetchResult(html=html, method="playwright", status_code=None)
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            try:
+                page = browser.new_page(locale="ja-JP")
+                page.goto(source_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                page.wait_for_timeout(1500)
+                html = page.content()
+                return FetchResult(html=html, method="playwright", status_code=None)
+            finally:
+                browser.close()
+
+    try:
+        return run_browser()
     except PlaywrightTimeoutError as exc:
         raise FetchError("Playwright取得がタイムアウトしました。") from exc
     except Exception as exc:
+        if _is_missing_playwright_browser_error(str(exc)):
+            _install_playwright_chromium()
+            try:
+                return run_browser()
+            except PlaywrightTimeoutError as retry_exc:
+                raise FetchError("Playwright取得がタイムアウトしました。") from retry_exc
+            except Exception as retry_exc:
+                raise FetchError(str(retry_exc)) from retry_exc
         raise FetchError(str(exc)) from exc
 
 

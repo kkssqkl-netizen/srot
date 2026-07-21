@@ -6,6 +6,7 @@ from ana_slo_importer import (
     ParseError,
     TargetStoreError,
     UrlValidationError,
+    _is_missing_playwright_browser_error,
     import_from_uploaded_html,
     is_target_store_url,
     parse_ana_slo_html,
@@ -43,6 +44,11 @@ def test_parse_int_handles_signs_and_separators():
     assert parse_int("+3,000枚") == 3000
     assert parse_int("−400") == -400
     assert parse_int("–") == 0
+
+
+def test_missing_playwright_browser_error_is_detected():
+    message = "BrowserType.launch: Executable doesn't exist. Please run playwright install"
+    assert _is_missing_playwright_browser_error(message)
 
 
 def test_parse_date_extracts_from_url_or_text():
