@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 
 import analyzer
@@ -43,3 +45,29 @@ def test_score_calculation_returns_required_columns():
     assert int(ranking.iloc[0]["台番号"]) == 101
     assert 0 <= ranking.iloc[0]["高設定期待度"] <= 100
 
+
+def test_target_ranking_uses_visit_date_and_x_hints():
+    df = analyzer.prepare_dataframe(_sample_df())
+    calendar = pd.DataFrame(
+        [
+            {
+                "date": "2026-07-04",
+                "special_day": True,
+                "event_name": "店長X",
+                "memo": "103番台と末尾3が気になる",
+            }
+        ]
+    )
+    ranking = analyzer.calculate_target_ranking(
+        df,
+        recent_days=7,
+        limit=5,
+        target_date=date(2026, 7, 4),
+        calendar_df=calendar,
+    )
+    assert "対象日" in ranking.columns
+    assert "対象曜日" in ranking.columns
+    row_103 = ranking[ranking["台番号"] == 103].iloc[0]
+    assert row_103["対象日"] == "2026-07-04"
+    assert row_103["特定日"] == "特定日"
+    assert "X示唆" in row_103["根拠"]

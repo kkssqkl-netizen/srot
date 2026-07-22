@@ -6,6 +6,8 @@ replaced with a model-based scorer.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
@@ -13,7 +15,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from config import STORE_NAME, WEEKDAY_JP
+from config import ANNIVERSARY_MONTH_DAY, DEFAULT_SPECIAL_DAY_SUFFIXES, STORE_NAME, WEEKDAY_JP
 
 
 @dataclass(frozen=True)
@@ -208,16 +210,108 @@ def _machine_number_signal(machine_no: int) -> tuple[float, str | None]:
     return score, "・".join(reasons) if reasons else None
 
 
-def calculate_target_ranking(df: pd.DataFrame, recent_days: int = 14, limit: int = 20) -> pd.DataFrame:
+def _default_special_day(target_date: date) -> bool:
+    if (target_date.month, target_date.day) == ANNIVERSARY_MONTH_DAY:
+        return True
+    return str(target_date.day)[-1] in DEFAULT_SPECIAL_DAY_SUFFIXES
+
+
+def _calendar_row_for_date(calendar_df: pd.DataFrame | None, target_date: date) -> dict[str, Any]:
+    if calendar_df is None or calendar_df.empty:
+        return {}
+    cal = calendar_df.copy()
+    cal["date"] = pd.to_datetime(cal["date"], errors="coerce").dt.date
+    rows = cal[cal["date"] == target_date]
+    if rows.empty:
+        return {}
+    return rows.iloc[-1].to_dict()
+
+
+def target_day_context(target_date: date, calendar_df: pd.DataFrame | None = None, hint_text: str = "") -> dict[str, Any]:
+    calendar_row = _calendar_row_for_date(calendar_df, target_date)
+    calendar_special = calendar_row.get("special_day")
+    special_day = bool(calendar_special) if calendar_special is not None and not pd.isna(calendar_special) else _default_special_day(target_date)
+    event_name = str(calendar_row.get("event_name") or "").strip()
+    memo = str(calendar_row.get("memo") or "").strip()
+    combined_hint = "\n".join(part for part in [event_name, memo, hint_text.strip()] if part)
+    return {
+        "date": target_date,
+        "weekday": WEEKDAY_JP[target_date.weekday()],
+        "special_day": special_day,
+        "event_name": event_name,
+        "memo": memo,
+        "hint_text": combined_hint,
+    }
+
+
+def _normalize_hint(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text or "").lower()
+    return re.sub(r"\s+", "", normalized)
+
+
+def _hint_score(machine_no: int, machine_name: str, hint_text: str) -> tuple[float, list[str]]:
+    if not hint_text.strip():
+        return 0.0, []
+
+    normalized_hint = _normalize_hint(hint_text)
+    normalized_machine_name = _normalize_hint(machine_name)
+    score = 0.0
+    reasons: list[str] = []
+
+    if normalized_machine_name and len(normalized_machine_name) >= 2 and normalized_machine_name in normalized_hint:
+        score += 18
+        reasons.append("X示唆:機種名")
+
+    explicit_numbers = {
+        int(match)
+        for match in re.findall(r"(?<!\d)(\d{3,4})(?:番台|番|台)", normalized_hint)
+    }
+    explicit_numbers.update(
+        int(match)
+        for match in re.findall(r"(?:台番号|台番)(\d{3,4})", normalized_hint)
+    )
+    if int(machine_no) in explicit_numbers:
+        score += 28
+        reasons.append("X示唆:台番号")
+
+    endings = set(re.findall(r"末尾([0-9])", normalized_hint))
+    if str(machine_no)[-1] in endings:
+        score += 12
+        reasons.append(f"X示唆:末尾{str(machine_no)[-1]}")
+
+    if "ゾロ目" in normalized_hint and len(str(machine_no)) >= 2 and str(machine_no)[-1] == str(machine_no)[-2]:
+        score += 10
+        reasons.append("X示唆:ゾロ目")
+
+    if ("角" in normalized_hint or "カド" in normalized_hint) and str(machine_no)[-1] in {"0", "1"}:
+        score += 4
+        reasons.append("X示唆:角候補")
+
+    return score, reasons
+
+
+def calculate_target_ranking(
+    df: pd.DataFrame,
+    recent_days: int = 14,
+    limit: int = 20,
+    target_date: date | None = None,
+    calendar_df: pd.DataFrame | None = None,
+    hint_text: str = "",
+) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["順位", "台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "根拠"])
 
-    latest_date = df["date"].max().date()
-    recent_start = latest_date - timedelta(days=max(recent_days, 1) - 1)
-    model_avg = df.groupby("machine_name")["diff_coins"].mean().to_dict()
+    context = target_day_context(target_date, calendar_df, hint_text) if target_date else {}
+    scoring_df = df[df["date"].dt.date < target_date].copy() if target_date else df.copy()
+    if scoring_df.empty:
+        scoring_df = df.copy()
+
+    reference_date = target_date or scoring_df["date"].max().date()
+    recent_start = reference_date - timedelta(days=max(recent_days, 1) - 1)
+    model_avg = scoring_df.groupby("machine_name")["diff_coins"].mean().to_dict()
     results: list[dict[str, Any]] = []
 
-    for machine_no, group in df.groupby("machine_no"):
+    for machine_no, group in scoring_df.groupby("machine_no"):
         group = group.sort_values("date")
         sample_count = len(group)
         avg_diff = float(group["diff_coins"].mean())
@@ -227,32 +321,56 @@ def calculate_target_ranking(df: pd.DataFrame, recent_days: int = 14, limit: int
         recent = group[group["date"].dt.date >= recent_start]
         recent_avg = float(recent["diff_coins"].mean()) if not recent.empty else avg_diff
         recent_win = float(recent["win"].mean() * 100) if not recent.empty else win_rate
+        same_weekday = group[group["weekday"] == context.get("weekday")] if context else group.iloc[0:0]
+        weekday_avg = float(same_weekday["diff_coins"].mean()) if not same_weekday.empty else 0
+        weekday_win = float(same_weekday["win"].mean() * 100) if not same_weekday.empty else win_rate
+
         special = group[group["special_day"]]
+        normal = group[~group["special_day"]]
         special_avg = float(special["diff_coins"].mean()) if not special.empty else 0
-        last_diff = int(group.iloc[-1]["diff_coins"])
-        prev_diff = int(group.iloc[-2]["diff_coins"]) if sample_count >= 2 else 0
+        normal_avg = float(normal["diff_coins"].mean()) if not normal.empty else avg_diff
+
+        exact_prev = group[group["date"].dt.date == reference_date - timedelta(days=1)]
+        exact_prev2 = group[group["date"].dt.date == reference_date - timedelta(days=2)]
+        last_before = group[group["date"].dt.date < reference_date].tail(1)
+        prev_before = group[group["date"].dt.date < reference_date].tail(2).head(1)
+        fallback_last = group.tail(1)
+        fallback_prev = group.tail(2).head(1)
+        last_diff = int(exact_prev.iloc[-1]["diff_coins"]) if not exact_prev.empty else int((last_before if not last_before.empty else fallback_last).iloc[-1]["diff_coins"])
+        prev_diff = int(exact_prev2.iloc[-1]["diff_coins"]) if not exact_prev2.empty else (int((prev_before if not prev_before.empty else fallback_prev).iloc[-1]["diff_coins"]) if sample_count >= 2 else 0)
         machine_name = str(group.iloc[-1]["machine_name"])
+        target_special_avg = special_avg if context.get("special_day") else normal_avg
+        hint_score, hint_reasons = _hint_score(int(machine_no), machine_name, str(context.get("hint_text", "")))
 
         score = 45.0
-        score += np.tanh(avg_diff / 1000) * 14
-        score += np.tanh(recent_avg / 1200) * 16
+        score += np.tanh(avg_diff / 1000) * 10
+        score += np.tanh(recent_avg / 1200) * 14
         score += (win_rate - 50) * 0.25
         score += np.tanh((avg_games - 2500) / 2500) * 8
-        score += np.tanh(special_avg / 1200) * 7
+        score += np.tanh(weekday_avg / 1000) * (10 if context else 0)
+        score += np.tanh(target_special_avg / 1200) * (10 if context else 7)
         score += np.tanh(model_avg.get(machine_name, 0) / 1000) * 6
+        score += hint_score
 
         reasons: list[str] = []
+        if context:
+            reasons.append(f"対象日{context['weekday']}曜")
+            if context.get("special_day"):
+                reasons.append("対象日は特定日")
+        reasons.extend(hint_reasons)
         if avg_diff > 0:
             reasons.append(f"平均差枚+{avg_diff:.0f}")
         if recent_avg > avg_diff and recent_avg > 0:
             reasons.append("直近上向き")
-        if special_avg > 0:
+        if context and not same_weekday.empty and weekday_avg > 0:
+            reasons.append(f"{context['weekday']}曜良好")
+        if context.get("special_day") and special_avg > 0:
             reasons.append("特定日良好")
         if avg_games >= 3000:
             reasons.append("平均G数高め")
         if last_diff < 0 <= avg_diff:
             score += 5
-            reasons.append("前日凹みからの上げ狙い")
+            reasons.append("前日/直近凹みからの上げ狙い")
         if prev_diff < 0 and last_diff < 0 and avg_diff > 0:
             score += 4
             reasons.append("前々日まで凹み")
@@ -264,23 +382,33 @@ def calculate_target_ranking(df: pd.DataFrame, recent_days: int = 14, limit: int
         if number_reason:
             reasons.append(number_reason)
 
-        reliability = _clip_score(35 + min(sample_count, 30) * 1.5 + np.tanh(avg_games / 3500) * 20)
-        expectation = avg_diff * 0.45 + recent_avg * 0.35 + model_avg.get(machine_name, 0) * 0.2
+        reliability = _clip_score(35 + min(sample_count, 30) * 1.3 + np.tanh(avg_games / 3500) * 18 + min(len(same_weekday), 8) * 1.2)
+        expectation = (
+            avg_diff * 0.25
+            + recent_avg * 0.28
+            + weekday_avg * (0.18 if context else 0)
+            + target_special_avg * (0.14 if context else 0.22)
+            + model_avg.get(machine_name, 0) * 0.15
+            + hint_score * 18
+        )
         high_setting_score = _clip_score(score)
 
-        results.append(
-            {
-                "台番号": int(machine_no),
-                "機種名": machine_name,
-                "勝率": win_rate,
-                "期待差枚": expectation,
-                "高設定期待度": high_setting_score,
-                "信頼度": reliability,
-                "根拠": " / ".join(reasons[:5]) if reasons else "サンプル不足のため弱い根拠",
-                "_recent_win": recent_win,
-                "_samples": sample_count,
-            }
-        )
+        row = {
+            "台番号": int(machine_no),
+            "機種名": machine_name,
+            "勝率": weekday_win if context and not same_weekday.empty else win_rate,
+            "期待差枚": expectation,
+            "高設定期待度": high_setting_score,
+            "信頼度": reliability,
+            "根拠": " / ".join(reasons[:6]) if reasons else "サンプル不足のため弱い根拠",
+            "_recent_win": recent_win,
+            "_samples": sample_count,
+        }
+        if context:
+            row["対象日"] = context["date"].isoformat()
+            row["対象曜日"] = context["weekday"]
+            row["特定日"] = "特定日" if context["special_day"] else "通常日"
+        results.append(row)
 
     ranking = pd.DataFrame(results).sort_values(
         ["高設定期待度", "信頼度", "期待差枚"], ascending=[False, False, False]
@@ -289,7 +417,11 @@ def calculate_target_ranking(df: pd.DataFrame, recent_days: int = 14, limit: int
     ranking = ranking.head(limit).copy()
     for col in ["勝率", "期待差枚", "高設定期待度", "信頼度"]:
         ranking[col] = ranking[col].round(0).astype(int)
-    return ranking[["順位", "台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "根拠"]]
+    columns = ["順位"]
+    if target_date:
+        columns.extend(["対象日", "対象曜日", "特定日"])
+    columns.extend(["台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "根拠"])
+    return ranking[columns]
 
 
 def machine_detail(df: pd.DataFrame, machine_no: int) -> dict[str, Any]:
