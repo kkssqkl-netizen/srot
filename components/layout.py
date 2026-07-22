@@ -201,6 +201,19 @@ def setup_page() -> None:
             background: #fff7ed;
             color: #9a3412;
         }
+        .rank-day {
+            margin-top: 0.65rem;
+            color: #075985;
+            background: #f0f9ff;
+            border: 1px solid #bae6fd;
+            border-radius: 6px;
+            padding: 0.42rem 0.5rem;
+            font-size: 0.82rem;
+            font-weight: 700;
+            line-height: 1.5;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
         .rank-reason {
             margin-top: 0.65rem;
             color: #334155;
@@ -268,6 +281,7 @@ def setup_page() -> None:
         }
         .rank-list-stat span,
         .rank-list-reason span,
+        .rank-list-day span,
         .rank-list-risk span {
             display: block;
             color: #64748b;
@@ -284,6 +298,15 @@ def setup_page() -> None:
         .rank-list-reason {
             color: #334155;
             font-size: 0.84rem;
+            line-height: 1.55;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            white-space: normal;
+        }
+        .rank-list-day {
+            color: #075985;
+            font-size: 0.84rem;
+            font-weight: 700;
             line-height: 1.55;
             overflow-wrap: anywhere;
             word-break: break-word;

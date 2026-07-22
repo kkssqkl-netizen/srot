@@ -308,6 +308,25 @@ def _join_limited(items: list[str], fallback: str, limit: int = 6) -> str:
     return " / ".join(unique_items[:limit]) if unique_items else fallback
 
 
+def _target_number_signal(machine_no: int, target_date: date, special_day: bool) -> tuple[float, list[str]]:
+    machine_text = str(machine_no)
+    day_text = f"{target_date.day:02d}"
+    target_suffix = str(target_date.day)[-1]
+    score = 0.0
+    reasons: list[str] = []
+
+    if machine_text[-1] == target_suffix:
+        score += 18 if special_day else 10
+        reasons.append(f"対象日末尾{target_suffix}")
+    if len(machine_text) >= 2 and machine_text[-2:] == day_text:
+        score += 8
+        reasons.append(f"{target_date.day}日リンク")
+    if target_date.day in {11, 22} and len(machine_text) >= 2 and machine_text[-1] == machine_text[-2]:
+        score += 8
+        reasons.append("ゾロ目日")
+    return score, reasons
+
+
 def calculate_target_ranking(
     df: pd.DataFrame,
     recent_days: int = 14,
@@ -316,7 +335,7 @@ def calculate_target_ranking(
     calendar_df: pd.DataFrame | None = None,
     hint_text: str = "",
 ) -> pd.DataFrame:
-    base_columns = ["順位", "台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "同機種順位", "サンプル数", "不安材料", "根拠"]
+    base_columns = ["順位", "台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "同機種順位", "サンプル数", "日別要因", "不安材料", "根拠"]
     if df.empty:
         return pd.DataFrame(columns=base_columns)
 
@@ -326,6 +345,8 @@ def calculate_target_ranking(
         scoring_df = df.copy()
     if "date_only" not in scoring_df.columns:
         scoring_df["date_only"] = scoring_df["date"].dt.date
+    scoring_df["date_day"] = scoring_df["date"].dt.day
+    scoring_df["date_day_suffix"] = scoring_df["date_day"].astype(str).str[-1]
 
     scoring_df["store_adjusted_diff"] = scoring_df["diff_coins"] - scoring_df.groupby("date_only")["diff_coins"].transform("mean")
     scoring_df["model_adjusted_diff"] = scoring_df["diff_coins"] - scoring_df.groupby(["date_only", "machine_name"])["diff_coins"].transform("mean")
@@ -361,6 +382,13 @@ def calculate_target_ranking(
         same_weekday = group[group["weekday"] == context.get("weekday")] if context else group.iloc[0:0]
         weekday_avg = float(same_weekday["diff_coins"].mean()) if not same_weekday.empty else 0
         weekday_win = float(same_weekday["win"].mean() * 100) if not same_weekday.empty else win_rate
+        target_day_suffix = str(context["date"].day)[-1] if context else ""
+        same_day = group[group["date_day"] == context["date"].day] if context else group.iloc[0:0]
+        same_day_suffix = group[group["date_day_suffix"] == target_day_suffix] if context else group.iloc[0:0]
+        same_day_avg = float(same_day["diff_coins"].mean()) if not same_day.empty else 0
+        same_day_suffix_avg = float(same_day_suffix["diff_coins"].mean()) if not same_day_suffix.empty else 0
+        same_day_win = float(same_day["win"].mean() * 100) if not same_day.empty else win_rate
+        same_day_suffix_win = float(same_day_suffix["win"].mean() * 100) if not same_day_suffix.empty else win_rate
 
         special = group[group["special_day"]]
         normal = group[~group["special_day"]]
@@ -386,6 +414,9 @@ def calculate_target_ranking(
         raw_hint_score, hint_reasons = _hint_score(int(machine_no), machine_name, str(context.get("hint_text", "")))
         hint_alignment = any([avg_diff > 0, recent_avg > 0, store_relative_avg > 0, model_relative_avg > 0, weekday_avg > 0])
         hint_score = raw_hint_score if hint_alignment else raw_hint_score * 0.55
+        target_number_score, target_number_reasons = (
+            _target_number_signal(int(machine_no), context["date"], bool(context.get("special_day"))) if context else (0.0, [])
+        )
 
         score = 45.0
         score += np.tanh(avg_diff / 1000) * 10
@@ -395,15 +426,20 @@ def calculate_target_ranking(
         score += np.tanh(model_relative_avg / 800) * 6
         score += (win_rate - 50) * 0.25
         score += np.tanh((avg_games - 2500) / 2500) * 8
-        score += np.tanh(weekday_avg / 1000) * (10 if context else 0)
-        score += np.tanh(target_special_avg / 1200) * (10 if context else 7)
+        score += np.tanh(weekday_avg / 850) * (16 if context else 0)
+        score += np.tanh(same_day_avg / 850) * (18 if context and not same_day.empty else 0)
+        score += np.tanh(same_day_suffix_avg / 850) * (14 if context and not same_day_suffix.empty else 0)
+        score += np.tanh(target_special_avg / 950) * (15 if context else 7)
         score += np.tanh(model_avg.get(machine_name, 0) / 1000) * 6
         score += (model_position - 0.5) * (10 if model_count > 1 else 0)
+        score += target_number_score
         score += hint_score
 
         reasons: list[str] = []
+        day_reasons: list[str] = []
         risks: list[str] = []
         reasons.extend(hint_reasons)
+        day_reasons.extend(target_number_reasons)
         if avg_diff > 0:
             reasons.append(f"平均差枚+{avg_diff:.0f}")
         if store_relative_avg > 200:
@@ -424,10 +460,25 @@ def calculate_target_ranking(
             risks.append("直近弱い")
         if recent_win < 40 and len(recent) >= 2:
             risks.append("直近勝率低め")
-        if context and not same_weekday.empty and weekday_avg > 0:
-            reasons.append(f"{context['weekday']}曜良好")
-        if context.get("special_day") and special_avg > 0:
-            reasons.append("特定日良好")
+        if context and not same_weekday.empty:
+            if weekday_avg > 200:
+                day_reasons.append(f"{context['weekday']}曜+{weekday_avg:.0f}")
+            elif weekday_avg < -400:
+                risks.append(f"{context['weekday']}曜弱め")
+        if context and not same_day.empty:
+            if same_day_avg > 200:
+                day_reasons.append(f"{context['date'].day}日傾向+{same_day_avg:.0f}")
+            elif same_day_avg < -400:
+                risks.append(f"{context['date'].day}日傾向弱め")
+        if context and not same_day_suffix.empty:
+            if same_day_suffix_avg > 200:
+                day_reasons.append(f"末尾{target_day_suffix}日+{same_day_suffix_avg:.0f}")
+            elif same_day_suffix_avg < -400:
+                risks.append(f"末尾{target_day_suffix}日弱め")
+        if context.get("special_day") and special_avg > 200:
+            day_reasons.append("特定日良好")
+        if context and not day_reasons:
+            risks.append("対象日固有の材料薄め")
         if avg_games >= 3000:
             reasons.append("平均G数高め")
         elif avg_games < 1500:
@@ -480,9 +531,12 @@ def calculate_target_ranking(
             + store_relative_avg * 0.18
             + recent_store_relative_avg * 0.15
             + model_relative_avg * 0.08
-            + weekday_avg * (0.18 if context else 0)
-            + target_special_avg * (0.14 if context else 0.22)
+            + weekday_avg * (0.24 if context else 0)
+            + same_day_avg * (0.24 if context else 0)
+            + same_day_suffix_avg * (0.18 if context else 0)
+            + target_special_avg * (0.18 if context else 0.22)
             + model_avg.get(machine_name, 0) * 0.15
+            + target_number_score * 22
             + hint_score * 18
         )
         high_setting_score = _clip_score(score)
@@ -496,9 +550,12 @@ def calculate_target_ranking(
             "信頼度": reliability,
             "同機種順位": model_rank_label,
             "サンプル数": sample_count,
+            "日別要因": _join_limited(day_reasons, "対象日固有の強い要因なし", 6),
             "不安材料": _join_limited(risks, "大きな不安材料なし", 5),
-            "根拠": _join_limited(reasons, "サンプル不足のため弱い根拠", 7),
+            "根拠": _join_limited(day_reasons + reasons, "サンプル不足のため弱い根拠", 8),
             "_recent_win": recent_win,
+            "_same_day_win": same_day_win,
+            "_same_day_suffix_win": same_day_suffix_win,
             "_samples": sample_count,
         }
         if context:
@@ -517,7 +574,7 @@ def calculate_target_ranking(
     columns = ["順位"]
     if target_date:
         columns.extend(["対象日", "対象曜日", "特定日"])
-    columns.extend(["台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "同機種順位", "サンプル数", "不安材料", "根拠"])
+    columns.extend(["台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "同機種順位", "サンプル数", "日別要因", "不安材料", "根拠"])
     return ranking[columns]
 
 

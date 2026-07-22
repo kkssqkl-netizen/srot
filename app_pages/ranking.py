@@ -29,6 +29,7 @@ def _diff_class(value) -> str:
 def _rank_card_html(row: dict) -> str:
     diff_value = row.get("期待差枚", 0)
     risk = str(row.get("不安材料", "大きな不安材料なし"))
+    day_factor = str(row.get("日別要因", "対象日固有の強い要因なし"))
     return dedent(
         f"""
         <div class="rank-card {_rank_class(row)}">
@@ -60,6 +61,7 @@ def _rank_card_html(row: dict) -> str:
         <span class="rank-chip">サンプル {escape(str(row.get("サンプル数", "-")))}件</span>
         <span class="rank-chip risk">不安: {escape(risk)}</span>
         </div>
+        <div class="rank-day">日別要因: {escape(day_factor)}</div>
         <div class="rank-reason">根拠: {escape(str(row.get("根拠", "")))}</div>
         </div>
         """
@@ -99,6 +101,7 @@ def _ranking_list_html(ranking) -> str:
                     f'<div class="rank-list-stat"><span>サンプル</span>{escape(str(row.get("サンプル数", "-")))}件</div>',
                     "</div>",
                     '<div class="rank-list-texts">',
+                    f'<div class="rank-list-day"><span>日別要因</span>{escape(str(row.get("日別要因", "対象日固有の強い要因なし")))}</div>',
                     f'<div class="rank-list-reason"><span>根拠</span>{escape(str(row.get("根拠", "")))}</div>',
                     f'<div class="rank-list-risk"><span>不安材料</span>{escape(str(row.get("不安材料", "大きな不安材料なし")))}</div>',
                     "</div>",
@@ -151,6 +154,9 @@ def render(df, calendar_df, profile):
     with st.expander("根拠の見方"):
         st.markdown(
             "- `X示唆` は入力した店長Xメモ内の機種名、台番号、末尾、ゾロ目などを反映します。\n"
+            "- `日別要因` は店に行く日の曜日、日付、日付末尾、特定日、台番号リンクを強く反映します。\n"
+            "- `対象日末尾` は、店に行く日の末尾と台番号末尾が合う台です。\n"
+            "- `○日傾向` と `末尾○日` は、過去の同じ日付・同じ日付末尾で強かった台です。\n"
             "- `店平均より+` は、店全体が強かった日の影響を差し引いても強い台です。\n"
             "- `同一機種平均より+` と `同機種順位` は、同じ機種内での強さを見ます。\n"
             "- `直近上向き` は直近成績が過去平均より強い台です。\n"

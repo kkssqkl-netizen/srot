@@ -19,6 +19,25 @@ def _sample_df() -> pd.DataFrame:
     )
 
 
+def _day_sensitive_df() -> pd.DataFrame:
+    rows = []
+    for day, diff_101, diff_105 in [
+        ("2026-07-01", 2500, -1000),
+        ("2026-07-05", -1000, 2500),
+        ("2026-07-11", 2400, -900),
+        ("2026-07-15", -900, 2400),
+        ("2026-07-21", 2200, -800),
+        ("2026-07-25", -800, 2200),
+    ]:
+        rows.extend(
+            [
+                {"store_name": "マルハン綾瀬上土棚店", "date": day, "machine_no": 101, "machine_name": "A", "games": 5200, "diff_coins": diff_101, "bb": 1, "rb": 1, "at_hits": 0, "first_hits": 0, "special_day": False},
+                {"store_name": "マルハン綾瀬上土棚店", "date": day, "machine_no": 105, "machine_name": "A", "games": 5200, "diff_coins": diff_105, "bb": 1, "rb": 1, "at_hits": 0, "first_hits": 0, "special_day": False},
+            ]
+        )
+    return pd.DataFrame(rows)
+
+
 def test_store_summary_and_trends():
     df = analyzer.prepare_dataframe(_sample_df())
     summary = analyzer.store_summary(df)
@@ -41,11 +60,12 @@ def test_filters_min_games_weekday_and_special():
 def test_score_calculation_returns_required_columns():
     df = analyzer.prepare_dataframe(_sample_df())
     ranking = analyzer.calculate_target_ranking(df, recent_days=7, limit=5)
-    assert list(ranking.columns) == ["順位", "台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "同機種順位", "サンプル数", "不安材料", "根拠"]
+    assert list(ranking.columns) == ["順位", "台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "同機種順位", "サンプル数", "日別要因", "不安材料", "根拠"]
     assert int(ranking.iloc[0]["台番号"]) == 101
     assert 0 <= ranking.iloc[0]["高設定期待度"] <= 100
     assert ranking.iloc[0]["同機種順位"]
     assert ranking.iloc[0]["サンプル数"] >= 1
+    assert ranking.iloc[0]["日別要因"]
     assert ranking.iloc[0]["不安材料"]
 
 
@@ -86,3 +106,15 @@ def test_ranking_surfaces_professional_risk_signals():
     assert "同機種順位" in ranking.columns
     assert "サンプル数" in ranking.columns
     assert "サンプル" in low_sample["不安材料"] or "G数" in low_sample["不安材料"]
+
+
+def test_target_date_changes_ranking_by_day_suffix_pattern():
+    df = analyzer.prepare_dataframe(_day_sensitive_df())
+
+    rank_for_1 = analyzer.calculate_target_ranking(df, recent_days=30, limit=2, target_date=date(2026, 8, 1))
+    rank_for_5 = analyzer.calculate_target_ranking(df, recent_days=30, limit=2, target_date=date(2026, 8, 5))
+
+    assert int(rank_for_1.iloc[0]["台番号"]) == 101
+    assert int(rank_for_5.iloc[0]["台番号"]) == 105
+    assert "末尾1日" in rank_for_1.iloc[0]["日別要因"] or "対象日末尾1" in rank_for_1.iloc[0]["日別要因"]
+    assert "末尾5日" in rank_for_5.iloc[0]["日別要因"] or "対象日末尾5" in rank_for_5.iloc[0]["日別要因"]
