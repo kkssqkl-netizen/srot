@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from ana_slo_importer import (
@@ -7,6 +9,7 @@ from ana_slo_importer import (
     TargetStoreError,
     UrlValidationError,
     _is_missing_playwright_browser_error,
+    contains_target_store,
     import_from_uploaded_html,
     is_target_store_url,
     parse_ana_slo_html,
@@ -61,6 +64,10 @@ def test_target_store_daily_url_validation():
     assert is_target_store_url(VALID_URL)
 
 
+def test_target_store_detection_allows_minor_spacing_variations():
+    assert contains_target_store("マルハン 綾瀬 上土棚 データまとめ")
+
+
 @pytest.mark.parametrize(
     "url,exc",
     [
@@ -87,6 +94,21 @@ def test_parse_ana_slo_html_extracts_all_machine_rows():
     assert record_500["diff_coins"] == 3000
 
 
+def test_valid_daily_url_allows_html_without_store_name_in_body():
+    html = """
+    <html><body>
+      <h4>マイジャグラーV</h4>
+      <table>
+        <tr><th>台番号</th><th>G数</th><th>差枚</th></tr>
+        <tr><td>601</td><td>7,555</td><td>+300</td></tr>
+      </table>
+    </body></html>
+    """
+    result = parse_ana_slo_html(html, VALID_URL)
+    assert len(result.records) == 1
+    assert result.records[0]["machine_no"] == 601
+
+
 def test_upload_html_requires_target_store_text():
     html = """
     <html><body>
@@ -99,7 +121,7 @@ def test_upload_html_requires_target_store_text():
     </body></html>
     """
     with pytest.raises(TargetStoreError):
-        import_from_uploaded_html(html, VALID_URL)
+        import_from_uploaded_html(html, "uploaded:test.html", expected_date=date(2026, 7, 7))
 
 
 def test_missing_table_raises_parse_error():

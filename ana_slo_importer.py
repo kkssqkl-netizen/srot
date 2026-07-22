@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from typing import Iterable
@@ -27,6 +28,7 @@ from config import (
 
 
 _PLAYWRIGHT_BROWSER_INSTALL_ATTEMPTED = False
+_TARGET_STORE_TOKENS = ("マルハン", "綾瀬", "上土棚")
 
 
 class AnaSloError(Exception):
@@ -95,6 +97,19 @@ def normalize_text(text: str | None) -> str:
     return re.sub(r"\s+", " ", str(text).replace("\xa0", " ")).strip()
 
 
+def normalize_store_marker(text: str | None) -> str:
+    normalized = unicodedata.normalize("NFKC", unquote(text or "")).lower()
+    return re.sub(r"[\s\-_./・|｜:：()（）\[\]【】「」『』]+", "", normalized)
+
+
+def contains_target_store(text: str | None) -> bool:
+    normalized = normalize_store_marker(text)
+    target = normalize_store_marker(STORE_NAME)
+    if target in normalized:
+        return True
+    return all(normalize_store_marker(token) in normalized for token in _TARGET_STORE_TOKENS)
+
+
 def parse_int(value: object, default: int = 0) -> int:
     text = normalize_text(str(value) if value is not None else "")
     if not text or text in {"-", "–", "—", "ー"}:
@@ -145,13 +160,13 @@ def validate_daily_url(source_url: str) -> date:
         raise UrlValidationError("ana-slo.com のURLではありません。")
 
     decoded_path = unquote(parsed.path)
-    if STORE_NAME not in decoded_path:
+    if "データ一覧" in decoded_path or "hall" in decoded_path.lower():
+        raise UrlValidationError("店舗一覧ページではなく、日別ページURLを入力してください。")
+    if not contains_target_store(decoded_path):
         raise TargetStoreError(f"{STORE_NAME} の日別ページURLではありません。")
     target_date = parse_date_from_text(decoded_path)
     if not target_date:
         raise UrlValidationError("日付を含む日別ページURLではありません。")
-    if "データ一覧" in decoded_path or "hall" in decoded_path.lower():
-        raise UrlValidationError("店舗一覧ページではなく、日別ページURLを入力してください。")
     return target_date
 
 
@@ -364,8 +379,19 @@ def parse_ana_slo_html(html: str, source_url: str, expected_date: date | None = 
         soup = BeautifulSoup(html, "lxml")
     except Exception:
         soup = BeautifulSoup(html, "html.parser")
-    page_text = normalize_text(soup.get_text(" ", strip=True)[:5000])
-    if STORE_NAME not in page_text:
+
+    url_confirms_store = False
+    if source_url.startswith(("http://", "https://")):
+        try:
+            validate_daily_url(source_url)
+            url_confirms_store = True
+        except AnaSloError:
+            url_confirms_store = False
+
+    title_text = soup.title.get_text(" ", strip=True) if soup.title else ""
+    meta_text = " ".join(meta.get("content", "") for meta in soup.find_all("meta"))
+    page_text = normalize_text(" ".join([source_url, title_text, meta_text, soup.get_text(" ", strip=True)]))
+    if not url_confirms_store and not contains_target_store(page_text):
         raise TargetStoreError(f"{STORE_NAME} のページではありません。")
 
     fetched_at = datetime.now(timezone.utc)
