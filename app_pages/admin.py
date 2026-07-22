@@ -7,7 +7,7 @@ import streamlit as st
 
 import auth
 import database
-from ana_slo_importer import AnaSloError, import_from_uploaded_html, import_from_url, validate_daily_url
+from ana_slo_importer import AnaSloError, import_from_page_text, import_from_uploaded_html, import_from_url, validate_daily_url
 from components import layout
 from config import MIN_IMPORT_INTERVAL_SECONDS, STORE_NAME
 from services import data_service
@@ -163,6 +163,33 @@ def _render_html_import() -> None:
             st.caption(str(exc))
 
 
+def _render_text_import() -> None:
+    st.subheader("コピー本文取込")
+    source_url = st.text_input("元ページURL（対象店舗の日別URL）", key="text_source_url")
+    expected_date = st.date_input("日付（URLから取れない本文用）", key="text_expected_date")
+    page_text = st.text_area("コピーしたページ本文", height=240, key="text_import_body")
+    if st.button("本文を解析", use_container_width=True):
+        if not page_text.strip():
+            st.warning("ページ本文を貼り付けてください。")
+            return
+        try:
+            with st.spinner("本文を解析しています..."):
+                result = import_from_page_text(page_text, source_url=source_url.strip(), expected_date=expected_date)
+            st.session_state["import_preview"] = {
+                "source_url": result.source_url,
+                "target_date": result.target_date,
+                "records": result.records,
+                "fetch_method": result.fetch_method,
+            }
+            st.success(f"{result.target_date} のデータを {len(result.records)} 件解析しました。")
+        except AnaSloError as exc:
+            st.error(exc.user_message)
+            st.caption(str(exc))
+        except Exception as exc:
+            st.error("本文解析に失敗しました。")
+            st.caption(str(exc))
+
+
 def _render_preview(profile: dict) -> None:
     st.subheader("取得結果プレビュー・登録前確認")
     preview = st.session_state.get("import_preview")
@@ -306,6 +333,8 @@ def render(df, calendar_df, profile):
         _render_url_import(profile)
         st.divider()
         _render_html_import()
+        st.divider()
+        _render_text_import()
         st.divider()
         _render_preview(profile)
         st.divider()

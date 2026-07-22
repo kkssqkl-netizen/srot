@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 
 from ana_slo_importer import (
+    BlankFetchError,
     FetchResult,
     NoMachineDataError,
     ParseError,
@@ -12,6 +13,7 @@ from ana_slo_importer import (
     UrlValidationError,
     _is_missing_playwright_browser_error,
     contains_target_store,
+    import_from_page_text,
     import_from_uploaded_html,
     is_target_store_url,
     parse_ana_slo_html,
@@ -162,6 +164,36 @@ def test_parse_line_block_table_extracts_machine_rows():
     assert record_725["diff_coins"] == 2300
     record_547 = next(row for row in result.records if row["machine_no"] == 547)
     assert record_547["machine_name"] == "スマスロ北斗の拳"
+
+
+def test_blank_fetch_html_is_reported_as_fetch_error():
+    blank_html = '<html><head><meta name="color-scheme" content="light dark"></head><body><pre> </pre></body></html>'
+    with pytest.raises(BlankFetchError):
+        parse_ana_slo_html(blank_html, VALID_URL)
+
+
+def test_import_from_page_text_extracts_tab_delimited_rows():
+    text = f"""
+    2026/07/07 {STORE_NAME} データまとめ
+    沖ドキ!GOLD
+    データ表示
+    グラフ表示
+    台番号\tG数\t差枚\tBB\tRB\t合成確率
+    725\t4,796\t+2,300\t39\t17\t1/85.6
+    726\t3,323\t+1,300\t27\t8\t1/94.9
+    平均\t4,046\t+288\t26\t12\t1/105.8
+
+    末尾5
+    機種名\t台番号\tG数\t差枚\tBB\tRB\tART
+    かぐや様は告らせたい\t485\t6,057\t+5,300\t45\t8\t0
+    """
+    result = import_from_page_text(text, VALID_URL)
+    assert len(result.records) == 3
+    record_725 = next(row for row in result.records if row["machine_no"] == 725)
+    assert record_725["machine_name"] == "沖ドキ!GOLD"
+    record_485 = next(row for row in result.records if row["machine_no"] == 485)
+    assert record_485["machine_name"] == "かぐや様は告らせたい"
+    assert result.fetch_method == "pasted_text"
 
 
 def test_import_from_url_retries_playwright_when_static_html_has_no_table(monkeypatch):

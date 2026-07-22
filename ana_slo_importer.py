@@ -47,6 +47,14 @@ class FetchError(AnaSloError):
     user_message = "ページ取得に失敗しました。時間をおいて再試行するか、保存HTMLをアップロードしてください。"
 
 
+class BlankFetchError(FetchError):
+    user_message = (
+        "ana-sloからページ本文を取得できませんでした。URLは正しい可能性がありますが、"
+        "Streamlit Cloudや自動ブラウザには空ページが返っています。"
+        "保存HTMLファイル、またはコピーしたページ本文で取り込んでください。"
+    )
+
+
 class ParseError(AnaSloError):
     user_message = "ページ内の表を解析できませんでした。HTML構造が変わっている可能性があります。"
 
@@ -403,6 +411,16 @@ def _is_separator_cells(cells: list[str]) -> bool:
     return bool(cells) and all(re.fullmatch(r":?-{2,}:?", cell.replace(" ", "")) for cell in cells)
 
 
+def _split_text_table_row(line: str) -> list[str]:
+    if "\t" in line:
+        return [normalize_text(part) for part in line.split("\t") if normalize_text(part)]
+    if "|" in line:
+        return _split_pipe_row(line)
+    if re.search(r"\s{2,}", line):
+        return [normalize_text(part) for part in re.split(r"\s{2,}", line.strip()) if normalize_text(part)]
+    return []
+
+
 _LINE_TABLE_HEADERS = {
     "機種名",
     "機種",
@@ -512,6 +530,51 @@ def _parse_markdownish_tables(text: str, target_date: date, source_url: str, fet
     return records
 
 
+def _parse_delimited_text_tables(text: str, target_date: date, source_url: str, fetched_at: datetime) -> list[MachineRecord]:
+    lines = [str(line).replace("\xa0", " ").strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    records: list[MachineRecord] = []
+    index = 0
+
+    while index < len(lines):
+        headers = _split_text_table_row(lines[index])
+        if not headers:
+            index += 1
+            continue
+        if (
+            _find_col(headers, ["台番号", "台番"]) is None
+            or _find_col(headers, ["G数", "総G数", "ゲーム数", "総ゲーム数", "総回転数", "回転数"]) is None
+            or _find_col(headers, ["差枚", "差枚数"]) is None
+        ):
+            index += 1
+            continue
+
+        header_start = index
+        machine_hint = "" if _find_col(headers, ["機種名", "機種"]) is not None else _machine_hint_before(lines, header_start)
+        index += 1
+        if index < len(lines) and _is_separator_cells(_split_text_table_row(lines[index])):
+            index += 1
+
+        while index < len(lines):
+            cells = _split_text_table_row(lines[index])
+            if not cells:
+                break
+            if _is_separator_cells(cells):
+                index += 1
+                continue
+            record = _record_from_cells(headers, cells, machine_hint, target_date, source_url, fetched_at)
+            if record:
+                records.append(record)
+                index += 1
+                continue
+            if cells and normalize_text(cells[0]) == "平均":
+                index += 1
+                break
+            index += 1
+
+    return records
+
+
 def _parse_line_block_tables(text: str, target_date: date, source_url: str, fetched_at: datetime) -> list[MachineRecord]:
     lines = [normalize_text(line) for line in text.splitlines()]
     lines = [line for line in lines if line]
@@ -559,8 +622,36 @@ def _parse_line_block_tables(text: str, target_date: date, source_url: str, fetc
     return records
 
 
+def _blank_fetch_detail(html: str) -> str | None:
+    text = normalize_text(BeautifulSoup(html, "html.parser").get_text(" ", strip=True))
+    has_data_marker = "台番号" in html or "G数" in html or "差枚" in html
+    if len(html) < 500 and len(text) < 50 and not has_data_marker:
+        return f"取得HTMLが空に近い状態です。HTML長={len(html)} / 本文長={len(text)}"
+    return None
+
+
+def _parse_records_from_text(
+    text: str,
+    target_date: date,
+    source_url: str,
+    fetched_at: datetime,
+) -> list[dict]:
+    unique: dict[tuple[date, int], MachineRecord] = {}
+    for parser in (_parse_markdownish_tables, _parse_delimited_text_tables, _parse_line_block_tables):
+        for record in parser(text, target_date, source_url, fetched_at):
+            unique[(record.date, record.machine_no)] = record
+    return [record.to_payload() for record in sorted(unique.values(), key=lambda item: item.machine_no)]
+
+
 def parse_ana_slo_html(html: str, source_url: str, expected_date: date | None = None) -> ImportResult:
-    if not html or len(html) < 100:
+    if not html:
+        raise ParseError("HTMLが空、または短すぎます。")
+
+    blank_detail = _blank_fetch_detail(html)
+    if blank_detail:
+        raise BlankFetchError(blank_detail)
+
+    if len(html) < 100:
         raise ParseError("HTMLが空、または短すぎます。")
 
     target_date = expected_date or parse_date_from_text(source_url) or parse_date_from_text(html[:5000])
@@ -599,6 +690,11 @@ def parse_ana_slo_html(html: str, source_url: str, expected_date: date | None = 
             unique[(record.date, record.machine_no)] = record
 
     if not unique:
+        fallback_text = "\n".join([title_text, meta_text, soup.get_text("\n", strip=True), html])
+        for record in _parse_delimited_text_tables(fallback_text, target_date, source_url, fetched_at):
+            unique[(record.date, record.machine_no)] = record
+
+    if not unique:
         fallback_text = "\n".join([title_text, meta_text, soup.get_text("\n", strip=True)])
         for record in _parse_line_block_tables(fallback_text, target_date, source_url, fetched_at):
             unique[(record.date, record.machine_no)] = record
@@ -626,14 +722,14 @@ def import_from_url(source_url: str) -> ImportResult:
     fetched = fetch_daily_page(source_url)
     try:
         result = parse_ana_slo_html(fetched.html, source_url=source_url, expected_date=target_date)
-    except ParseError as first_error:
+    except (ParseError, BlankFetchError) as first_error:
         if fetched.method != "requests":
             raise
         time.sleep(1.0)
         fetched = fetch_html_with_playwright(source_url)
         try:
             result = parse_ana_slo_html(fetched.html, source_url=source_url, expected_date=target_date)
-        except ParseError as retry_error:
+        except (ParseError, BlankFetchError) as retry_error:
             raise retry_error from first_error
     return ImportResult(
         store_name=result.store_name,
@@ -649,3 +745,42 @@ def import_from_uploaded_html(html: str, source_url: str, expected_date: date | 
     if source_url and source_url.startswith("http"):
         expected_date = expected_date or validate_daily_url(source_url)
     return parse_ana_slo_html(html, source_url=source_url or "uploaded_html", expected_date=expected_date)
+
+
+def import_from_page_text(text: str, source_url: str, expected_date: date | None = None) -> ImportResult:
+    if not text or len(text.strip()) < 20:
+        raise ParseError("貼り付け本文が空、または短すぎます。")
+
+    if source_url and source_url.startswith("http"):
+        expected_date = expected_date or validate_daily_url(source_url)
+    target_date = expected_date or parse_date_from_text(source_url) or parse_date_from_text(text[:5000])
+    if not target_date:
+        raise ParseError("日付が取得できません。")
+
+    url_confirms_store = False
+    if source_url.startswith(("http://", "https://")):
+        try:
+            validate_daily_url(source_url)
+            url_confirms_store = True
+        except AnaSloError:
+            url_confirms_store = False
+    if not url_confirms_store and not contains_target_store(text):
+        raise TargetStoreError(f"{STORE_NAME} のページではありません。")
+
+    fetched_at = datetime.now(timezone.utc)
+    records = _parse_records_from_text(text, target_date, source_url or "pasted_text", fetched_at)
+    if not records:
+        detail = (
+            "台番号・G数・差枚を含む表が見つかりません。"
+            f" 本文長={len(text)} / 台番号文字={'あり' if '台番号' in text else 'なし'}"
+        )
+        raise NoMachineDataError(detail)
+
+    return ImportResult(
+        store_name=STORE_NAME,
+        target_date=target_date,
+        source_url=source_url or "pasted_text",
+        fetched_at=fetched_at,
+        records=records,
+        fetch_method="pasted_text",
+    )
