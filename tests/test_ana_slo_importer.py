@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 
 from ana_slo_importer import (
+    FetchResult,
     ParseError,
     TargetStoreError,
     UrlValidationError,
@@ -15,6 +16,7 @@ from ana_slo_importer import (
     parse_ana_slo_html,
     parse_date_from_text,
     parse_int,
+    import_from_url,
     validate_daily_url,
 )
 from config import STORE_NAME
@@ -107,6 +109,53 @@ def test_valid_daily_url_allows_html_without_store_name_in_body():
     result = parse_ana_slo_html(html, VALID_URL)
     assert len(result.records) == 1
     assert result.records[0]["machine_no"] == 601
+
+
+def test_parse_markdownish_table_extracts_machine_rows():
+    html = f"""
+    <html><body><pre>
+    # 2026/07/07 {STORE_NAME} データまとめ
+    #### スーパーリオエース2
+    台番号 | G数 | 差枚 | BB | RB
+    --- | --- | --- | --- | ---
+    509 | 3,255 | -100 | 28 | 19
+    510 | 5,478 | +700 | 48 | 24
+
+    #### 1台設置機種
+    機種名 | 台番号 | G数 | 差枚 | BB | RB
+    --- | --- | --- | --- | --- | ---
+    アクダマドライブ | 490 | 2,967 | +700 | 15 | 9
+    </pre></body></html>
+    """
+    result = parse_ana_slo_html(html, VALID_URL)
+    assert len(result.records) == 3
+    record_509 = next(row for row in result.records if row["machine_no"] == 509)
+    assert record_509["machine_name"] == "スーパーリオエース2"
+    record_490 = next(row for row in result.records if row["machine_no"] == 490)
+    assert record_490["machine_name"] == "アクダマドライブ"
+
+
+def test_import_from_url_retries_playwright_when_static_html_has_no_table(monkeypatch):
+    calls = []
+
+    def fake_fetch_daily_page(source_url):
+        calls.append("requests")
+        return FetchResult(
+            html=f"<html><body><h1>{STORE_NAME}</h1><p>loading</p></body></html>",
+            method="requests",
+            status_code=200,
+        )
+
+    def fake_fetch_html_with_playwright(source_url):
+        calls.append("playwright")
+        return FetchResult(html=SAMPLE_HTML, method="playwright")
+
+    monkeypatch.setattr("ana_slo_importer.fetch_daily_page", fake_fetch_daily_page)
+    monkeypatch.setattr("ana_slo_importer.fetch_html_with_playwright", fake_fetch_html_with_playwright)
+    result = import_from_url(VALID_URL)
+    assert calls == ["requests", "playwright"]
+    assert len(result.records) == 3
+    assert result.fetch_method == "playwright"
 
 
 def test_upload_html_requires_target_store_text():

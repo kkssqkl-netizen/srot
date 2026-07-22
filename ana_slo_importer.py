@@ -248,6 +248,14 @@ def fetch_html_with_playwright(source_url: str, timeout_ms: int = 30000) -> Fetc
             try:
                 page = browser.new_page(locale="ja-JP")
                 page.goto(source_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=10000)
+                except Exception:
+                    pass
+                try:
+                    page.wait_for_selector("table, text=台番号", timeout=10000)
+                except Exception:
+                    pass
                 page.wait_for_timeout(1500)
                 html = page.content()
                 return FetchResult(html=html, method="playwright", status_code=None)
@@ -305,17 +313,19 @@ def _heading_for_table(table) -> str:
     return normalize_text(text.strip(" ・"))
 
 
-def _parse_table(table, target_date: date, source_url: str, fetched_at: datetime) -> list[MachineRecord]:
-    rows = table.find_all("tr")
-    if len(rows) < 2:
-        return []
-
-    headers = _cell_texts(rows[0])
+def _record_from_cells(
+    headers: list[str],
+    cells: list[str],
+    machine_hint: str,
+    target_date: date,
+    source_url: str,
+    fetched_at: datetime,
+) -> MachineRecord | None:
     machine_no_col = _find_col(headers, ["台番号", "台番"])
     games_col = _find_col(headers, ["G数", "総G数", "ゲーム数", "総ゲーム数", "総回転数", "回転数"])
     diff_col = _find_col(headers, ["差枚", "差枚数"])
     if machine_no_col is None or games_col is None or diff_col is None:
-        return []
+        return None
 
     machine_name_col = _find_col(headers, ["機種名", "機種"])
     bb_col = _find_col(headers, ["BB", "BB回数"])
@@ -323,47 +333,111 @@ def _parse_table(table, target_date: date, source_url: str, fetched_at: datetime
     at_col = _find_col(headers, ["AT", "ART", "AT回数", "ART回数"])
     first_col = _find_col(headers, ["初当たり", "初当り", "初当たり回数", "初当り回数"])
 
+    if len(cells) <= max(machine_no_col, games_col, diff_col):
+        return None
+
+    machine_no = parse_int(cells[machine_no_col], default=-1)
+    if machine_no < 0:
+        return None
+
+    machine_name = machine_hint
+    if machine_name_col is not None and machine_name_col < len(cells):
+        machine_name = normalize_text(cells[machine_name_col])
+    if not machine_name:
+        machine_name = "機種名未取得"
+
+    games = parse_int(cells[games_col])
+    diff_coins = parse_int(cells[diff_col])
+    bb = parse_int(cells[bb_col]) if bb_col is not None and bb_col < len(cells) else 0
+    rb = parse_int(cells[rb_col]) if rb_col is not None and rb_col < len(cells) else 0
+    at_hits = parse_int(cells[at_col]) if at_col is not None and at_col < len(cells) else 0
+    first_hits = parse_int(cells[first_col]) if first_col is not None and first_col < len(cells) else at_hits
+
+    return MachineRecord(
+        store_name=STORE_NAME,
+        date=target_date,
+        machine_no=machine_no,
+        machine_name=machine_name,
+        games=games,
+        diff_coins=diff_coins,
+        bb=bb,
+        rb=rb,
+        at_hits=at_hits,
+        first_hits=first_hits,
+        special_day=is_default_special_day(target_date),
+        source_url=source_url,
+        fetched_at=fetched_at,
+    )
+
+
+def _parse_table(table, target_date: date, source_url: str, fetched_at: datetime) -> list[MachineRecord]:
+    rows = table.find_all("tr")
+    if len(rows) < 2:
+        return []
+
+    headers = _cell_texts(rows[0])
     machine_hint = _heading_for_table(table)
     records: list[MachineRecord] = []
     for row in rows[1:]:
         cells = _cell_texts(row)
-        if len(cells) <= max(machine_no_col, games_col, diff_col):
+        record = _record_from_cells(headers, cells, machine_hint, target_date, source_url, fetched_at)
+        if record:
+            records.append(record)
+    return records
+
+
+def _split_pipe_row(line: str) -> list[str]:
+    if "|" not in line:
+        return []
+    return [normalize_text(part) for part in line.strip().strip("|").split("|")]
+
+
+def _is_separator_cells(cells: list[str]) -> bool:
+    return bool(cells) and all(re.fullmatch(r":?-{2,}:?", cell.replace(" ", "")) for cell in cells)
+
+
+def _parse_markdownish_tables(text: str, target_date: date, source_url: str, fetched_at: datetime) -> list[MachineRecord]:
+    lines = [normalize_text(line) for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    records: list[MachineRecord] = []
+    machine_hint = ""
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("#"):
+            machine_hint = normalize_text(line.lstrip("#").strip())
+            index += 1
             continue
 
-        machine_no = parse_int(cells[machine_no_col], default=-1)
-        if machine_no < 0:
+        headers = _split_pipe_row(line)
+        if not headers or _find_col(headers, ["台番号", "台番"]) is None:
+            index += 1
+            continue
+        if _find_col(headers, ["G数", "総G数", "ゲーム数", "総ゲーム数", "総回転数", "回転数"]) is None:
+            index += 1
+            continue
+        if _find_col(headers, ["差枚", "差枚数"]) is None:
+            index += 1
             continue
 
-        machine_name = machine_hint
-        if machine_name_col is not None and machine_name_col < len(cells):
-            machine_name = normalize_text(cells[machine_name_col])
-        if not machine_name:
-            machine_name = "機種名未取得"
+        index += 1
+        if index < len(lines) and _is_separator_cells(_split_pipe_row(lines[index])):
+            index += 1
 
-        games = parse_int(cells[games_col])
-        diff_coins = parse_int(cells[diff_col])
-        bb = parse_int(cells[bb_col]) if bb_col is not None and bb_col < len(cells) else 0
-        rb = parse_int(cells[rb_col]) if rb_col is not None and rb_col < len(cells) else 0
-        at_hits = parse_int(cells[at_col]) if at_col is not None and at_col < len(cells) else 0
-        first_hits = parse_int(cells[first_col]) if first_col is not None and first_col < len(cells) else at_hits
+        while index < len(lines):
+            cells = _split_pipe_row(lines[index])
+            if not cells:
+                break
+            if _is_separator_cells(cells):
+                index += 1
+                continue
+            record = _record_from_cells(headers, cells, machine_hint, target_date, source_url, fetched_at)
+            if record:
+                records.append(record)
+            index += 1
+        continue
 
-        records.append(
-            MachineRecord(
-                store_name=STORE_NAME,
-                date=target_date,
-                machine_no=machine_no,
-                machine_name=machine_name,
-                games=games,
-                diff_coins=diff_coins,
-                bb=bb,
-                rb=rb,
-                at_hits=at_hits,
-                first_hits=first_hits,
-                special_day=is_default_special_day(target_date),
-                source_url=source_url,
-                fetched_at=fetched_at,
-            )
-        )
     return records
 
 
@@ -390,7 +464,8 @@ def parse_ana_slo_html(html: str, source_url: str, expected_date: date | None = 
 
     title_text = soup.title.get_text(" ", strip=True) if soup.title else ""
     meta_text = " ".join(meta.get("content", "") for meta in soup.find_all("meta"))
-    page_text = normalize_text(" ".join([source_url, title_text, meta_text, soup.get_text(" ", strip=True)]))
+    body_text_for_store = soup.get_text(" ", strip=True)
+    page_text = normalize_text(" ".join([source_url, title_text, meta_text, body_text_for_store]))
     if not url_confirms_store and not contains_target_store(page_text):
         raise TargetStoreError(f"{STORE_NAME} のページではありません。")
 
@@ -398,6 +473,11 @@ def parse_ana_slo_html(html: str, source_url: str, expected_date: date | None = 
     unique: dict[tuple[date, int], MachineRecord] = {}
     for table in soup.find_all("table"):
         for record in _parse_table(table, target_date, source_url, fetched_at):
+            unique[(record.date, record.machine_no)] = record
+
+    if not unique:
+        fallback_text = "\n".join([title_text, meta_text, soup.get_text("\n", strip=True), html])
+        for record in _parse_markdownish_tables(fallback_text, target_date, source_url, fetched_at):
             unique[(record.date, record.machine_no)] = record
 
     records = [record.to_payload() for record in sorted(unique.values(), key=lambda item: item.machine_no)]
@@ -416,7 +496,17 @@ def parse_ana_slo_html(html: str, source_url: str, expected_date: date | None = 
 def import_from_url(source_url: str) -> ImportResult:
     target_date = validate_daily_url(source_url)
     fetched = fetch_daily_page(source_url)
-    result = parse_ana_slo_html(fetched.html, source_url=source_url, expected_date=target_date)
+    try:
+        result = parse_ana_slo_html(fetched.html, source_url=source_url, expected_date=target_date)
+    except ParseError as first_error:
+        if fetched.method != "requests":
+            raise
+        time.sleep(1.0)
+        fetched = fetch_html_with_playwright(source_url)
+        try:
+            result = parse_ana_slo_html(fetched.html, source_url=source_url, expected_date=target_date)
+        except ParseError as retry_error:
+            raise retry_error from first_error
     return ImportResult(
         store_name=result.store_name,
         target_date=result.target_date,
