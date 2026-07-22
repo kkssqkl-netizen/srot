@@ -11,6 +11,50 @@ from analyzer import AnalysisFilters
 from config import APP_NAME, ROLE_ADMIN, WEEKDAY_JP
 
 
+COLUMN_LABELS = {
+    "id": "ID",
+    "store_name": "店舗名",
+    "date": "日付",
+    "date_only": "集計日",
+    "weekday": "曜日",
+    "machine_no": "台番号",
+    "machine_name": "機種名",
+    "games": "G数",
+    "diff_coins": "差枚",
+    "bb": "BB",
+    "rb": "RB",
+    "at_hits": "AT",
+    "first_hits": "初当たり",
+    "special_day": "特定日",
+    "event_name": "イベント名",
+    "memo": "メモ",
+    "source_url": "元URL",
+    "fetched_at": "取得日時",
+    "created_at": "作成日時",
+    "updated_at": "更新日時",
+    "total_diff": "総差枚",
+    "avg_diff": "平均差枚",
+    "win_rate": "勝率",
+    "avg_games": "平均G数",
+    "machines": "台数",
+    "samples": "サンプル数",
+    "records": "件数",
+    "records_found": "取得件数",
+    "records_added": "追加件数",
+    "status": "状態",
+    "error_message": "エラー内容",
+    "target_date": "対象日",
+    "user_id": "ユーザーID",
+    "email": "メールアドレス",
+    "display_name": "表示名",
+    "role": "権限",
+    "win": "勝ち",
+    "prev_diff": "前日差枚",
+    "prev2_diff": "前々日差枚",
+    "expectation_trend": "高設定期待度",
+}
+
+
 def setup_page() -> None:
     st.set_page_config(page_title=APP_NAME, page_icon="📊", layout="wide", initial_sidebar_state="expanded")
     st.markdown(
@@ -103,6 +147,10 @@ def format_rate(value: float | int | None) -> str:
     return f"{float(value):.0f}%"
 
 
+def localize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    return df.rename(columns={col: COLUMN_LABELS.get(str(col), str(col)) for col in df.columns})
+
+
 def render_filter_panel(df: pd.DataFrame, key_prefix: str, show_machine_filters: bool = True) -> AnalysisFilters:
     st.sidebar.subheader("分析条件")
     if df.empty:
@@ -159,6 +207,9 @@ def render_filter_panel(df: pd.DataFrame, key_prefix: str, show_machine_filters:
 
 
 def style_diff_columns(df: pd.DataFrame, diff_columns: Iterable[str]):
+    display_df = localize_columns(df.copy())
+    localized_diff_columns = [COLUMN_LABELS.get(str(col), str(col)) for col in diff_columns]
+
     def color(value):
         try:
             numeric = float(value)
@@ -172,7 +223,7 @@ def style_diff_columns(df: pd.DataFrame, diff_columns: Iterable[str]):
 
     numeric_formats = {
         col: "{:,.0f}"
-        for col in df.columns
-        if pd.api.types.is_numeric_dtype(df[col]) and not pd.api.types.is_bool_dtype(df[col])
+        for col in display_df.columns
+        if pd.api.types.is_numeric_dtype(display_df[col]) and not pd.api.types.is_bool_dtype(display_df[col])
     }
-    return df.style.map(color, subset=[col for col in diff_columns if col in df.columns]).format(numeric_formats)
+    return display_df.style.map(color, subset=[col for col in localized_diff_columns if col in display_df.columns]).format(numeric_formats)

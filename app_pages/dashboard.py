@@ -30,7 +30,15 @@ def render(df, calendar_df, profile):
     tab_daily, tab_model, tab_recent = st.tabs(["日別傾向", "機種別傾向", "直近ランキング"])
     with tab_daily:
         if not daily.empty:
-            fig = px.bar(daily, x="date", y="total_diff", title="日別総差枚", color="total_diff", color_continuous_scale=["#2563eb", "#f8fafc", "#dc2626"])
+            fig = px.bar(
+                daily,
+                x="date",
+                y="total_diff",
+                title="日別総差枚",
+                color="total_diff",
+                color_continuous_scale=["#2563eb", "#f8fafc", "#dc2626"],
+                labels=layout.COLUMN_LABELS,
+            )
             st.plotly_chart(fig, use_container_width=True)
             st.dataframe(layout.style_diff_columns(daily, ["total_diff", "avg_diff"]), use_container_width=True, hide_index=True)
     with tab_model:
@@ -38,4 +46,3 @@ def render(df, calendar_df, profile):
     with tab_recent:
         ranking = analyzer.calculate_target_ranking(filtered, recent_days=filters.recent_days, limit=filters.limit)
         st.dataframe(layout.style_diff_columns(ranking, ["期待差枚"]), use_container_width=True, hide_index=True)
-

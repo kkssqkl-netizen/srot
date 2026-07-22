@@ -36,9 +36,9 @@ def render(df, calendar_df, profile):
 
     tab_daily, tab_recent, tab_pattern = st.tabs(["日付別", "直近", "傾向"])
     with tab_daily:
-        fig = px.bar(group, x="date", y="diff_coins", color="diff_coins", color_continuous_scale=["#2563eb", "#f8fafc", "#dc2626"], title=f"{selected}番台 日付別差枚")
+        fig = px.bar(group, x="date", y="diff_coins", color="diff_coins", color_continuous_scale=["#2563eb", "#f8fafc", "#dc2626"], title=f"{selected}番台 日付別差枚", labels=layout.COLUMN_LABELS)
         st.plotly_chart(fig, use_container_width=True)
-        fig_games = px.line(group, x="date", y="games", markers=True, title="日付別ゲーム数")
+        fig_games = px.line(group, x="date", y="games", markers=True, title="日付別ゲーム数", labels=layout.COLUMN_LABELS)
         st.plotly_chart(fig_games, use_container_width=True)
         display = group[["date", "machine_name", "games", "diff_coins", "bb", "rb", "at_hits", "first_hits", "special_day", "event_name"]]
         st.dataframe(layout.style_diff_columns(display, ["diff_coins"]), use_container_width=True, hide_index=True)
@@ -48,7 +48,7 @@ def render(df, calendar_df, profile):
         c1.metric("直近7日 平均差枚", layout.format_diff(detail["last_7"]["diff_coins"].mean()))
         c2.metric("直近14日 平均差枚", layout.format_diff(detail["last_14"]["diff_coins"].mean()))
         c3.metric("直近30日 平均差枚", layout.format_diff(detail["last_30"]["diff_coins"].mean()))
-        fig_trend = px.line(group, x="date", y="expectation_trend", markers=True, title="高設定期待度の推移")
+        fig_trend = px.line(group, x="date", y="expectation_trend", markers=True, title="高設定期待度の推移", labels=layout.COLUMN_LABELS)
         st.plotly_chart(fig_trend, use_container_width=True)
 
     with tab_pattern:
@@ -59,6 +59,5 @@ def render(df, calendar_df, profile):
         c1, c2 = st.columns(2)
         c1.metric("前日差枚との相関", "N/A" if detail["prev_corr"] != detail["prev_corr"] else f"{detail['prev_corr']:.2f}")
         c2.metric("前々日差枚との相関", "N/A" if detail["prev2_corr"] != detail["prev2_corr"] else f"{detail['prev2_corr']:.2f}")
-        fig_prev = px.scatter(group.dropna(subset=["prev_diff"]), x="prev_diff", y="diff_coins", trendline="ols", title="前日差枚 vs 当日差枚")
+        fig_prev = px.scatter(group.dropna(subset=["prev_diff"]), x="prev_diff", y="diff_coins", trendline="ols", title="前日差枚 vs 当日差枚", labels=layout.COLUMN_LABELS)
         st.plotly_chart(fig_prev, use_container_width=True)
-

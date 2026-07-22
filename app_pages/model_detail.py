@@ -32,7 +32,7 @@ def render(df, calendar_df, profile):
 
     tab_machine, tab_daily, tab_special = st.tabs(["台番号別", "日付別", "特定日"])
     with tab_machine:
-        fig = px.bar(detail["by_machine"], x="machine_no", y="avg_diff", color="avg_diff", color_continuous_scale=["#2563eb", "#f8fafc", "#dc2626"], title="台番号別成績")
+        fig = px.bar(detail["by_machine"], x="machine_no", y="avg_diff", color="avg_diff", color_continuous_scale=["#2563eb", "#f8fafc", "#dc2626"], title="台番号別成績", labels=layout.COLUMN_LABELS)
         st.plotly_chart(fig, use_container_width=True)
         st.dataframe(layout.style_diff_columns(detail["by_machine"], ["avg_diff"]), use_container_width=True, hide_index=True)
         c1, c2 = st.columns(2)
@@ -44,8 +44,7 @@ def render(df, calendar_df, profile):
             st.dataframe(layout.style_diff_columns(detail["weak_machines"], ["avg_diff"]), use_container_width=True, hide_index=True)
     with tab_daily:
         st.dataframe(layout.style_diff_columns(detail["daily"], ["total_diff", "avg_diff"]), use_container_width=True, hide_index=True)
-        fig_daily = px.line(detail["daily"], x="date", y=["total_diff", "avg_diff"], markers=True, title="日付別成績")
+        fig_daily = px.line(detail["daily"], x="date", y=["total_diff", "avg_diff"], markers=True, title="日付別成績", labels=layout.COLUMN_LABELS)
         st.plotly_chart(fig_daily, use_container_width=True)
     with tab_special:
         st.dataframe(layout.style_diff_columns(detail["special"], ["avg_diff"]), use_container_width=True, hide_index=True)
-
