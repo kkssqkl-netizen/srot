@@ -135,9 +135,17 @@ def _key(record: dict[str, Any]) -> tuple[str, str, int]:
     return (str(record["store_name"]), str(record["date"]), int(record["machine_no"]))
 
 
+def dedupe_record_payloads(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: dict[tuple[str, str, int], dict[str, Any]] = {}
+    for record in records:
+        payload = normalize_record_payload(record)
+        unique[_key(payload)] = payload
+    return list(unique.values())
+
+
 def compute_upsert_summary(existing_records: Iterable[dict[str, Any]], incoming_records: Iterable[dict[str, Any]]) -> dict[str, int]:
     existing_keys = {_key(normalize_record_payload(row)) for row in existing_records}
-    incoming_payloads = [normalize_record_payload(row) for row in incoming_records]
+    incoming_payloads = dedupe_record_payloads(incoming_records)
     incoming_keys = {_key(row) for row in incoming_payloads}
     updated = len(incoming_keys & existing_keys)
     added = len(incoming_keys - existing_keys)
@@ -148,7 +156,7 @@ def upsert_machine_records(records: list[dict[str, Any]], access_token: str | No
     if not records:
         return {"records_added": 0, "records_updated": 0, "records_total": 0}
 
-    payloads = [normalize_record_payload(row) for row in records]
+    payloads = dedupe_record_payloads(records)
     client = get_supabase_client(access_token=access_token)
     existing: list[dict[str, Any]] = []
     for store_name, target_date in sorted({(row["store_name"], row["date"]) for row in payloads}):
