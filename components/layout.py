@@ -175,6 +175,32 @@ def setup_page() -> None:
         }
         .rank-metric-value.positive { color: #dc2626; }
         .rank-metric-value.negative { color: #2563eb; }
+        .rank-chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+            margin-top: 0.65rem;
+        }
+        .rank-chip {
+            display: inline-flex;
+            max-width: 100%;
+            align-items: center;
+            border-radius: 999px;
+            border: 1px solid #dbeafe;
+            background: #eff6ff;
+            color: #1e3a8a;
+            padding: 0.16rem 0.48rem;
+            font-size: 0.73rem;
+            font-weight: 700;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+        .rank-chip.risk {
+            border-color: #fed7aa;
+            background: #fff7ed;
+            color: #9a3412;
+        }
         .rank-reason {
             margin-top: 0.65rem;
             color: #334155;
@@ -190,7 +216,7 @@ def setup_page() -> None:
         }
         .rank-list-row {
             display: grid;
-            grid-template-columns: minmax(160px, 0.9fr) minmax(210px, 0.8fr) minmax(300px, 1.5fr);
+            grid-template-columns: minmax(160px, 0.78fr) minmax(230px, 0.9fr) minmax(320px, 1.55fr);
             gap: 0.75rem;
             align-items: start;
             min-width: 0;
@@ -241,15 +267,30 @@ def setup_page() -> None:
             line-height: 1.35;
         }
         .rank-list-stat span,
-        .rank-list-reason span {
+        .rank-list-reason span,
+        .rank-list-risk span {
             display: block;
             color: #64748b;
             font-size: 0.72rem;
             font-weight: 600;
             line-height: 1.3;
         }
+        .rank-list-texts {
+            display: grid;
+            grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+            gap: 0.65rem;
+            min-width: 0;
+        }
         .rank-list-reason {
             color: #334155;
+            font-size: 0.84rem;
+            line-height: 1.55;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            white-space: normal;
+        }
+        .rank-list-risk {
+            color: #9a3412;
             font-size: 0.84rem;
             line-height: 1.55;
             overflow-wrap: anywhere;
@@ -263,6 +304,7 @@ def setup_page() -> None:
             .rank-metrics { grid-template-columns: 1fr 1fr; }
             .rank-list-row { grid-template-columns: 1fr; gap: 0.55rem; }
             .rank-list-stats { grid-template-columns: 1fr 1fr; }
+            .rank-list-texts { grid-template-columns: 1fr; }
         }
         </style>
         """,

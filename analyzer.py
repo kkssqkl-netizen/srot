@@ -290,6 +290,24 @@ def _hint_score(machine_no: int, machine_name: str, hint_text: str) -> tuple[flo
     return score, reasons
 
 
+def _consecutive_negative_count(values: pd.Series) -> int:
+    count = 0
+    for value in reversed(values.tolist()):
+        if float(value) < 0:
+            count += 1
+        else:
+            break
+    return count
+
+
+def _join_limited(items: list[str], fallback: str, limit: int = 6) -> str:
+    unique_items: list[str] = []
+    for item in items:
+        if item and item not in unique_items:
+            unique_items.append(item)
+    return " / ".join(unique_items[:limit]) if unique_items else fallback
+
+
 def calculate_target_ranking(
     df: pd.DataFrame,
     recent_days: int = 14,
@@ -298,17 +316,33 @@ def calculate_target_ranking(
     calendar_df: pd.DataFrame | None = None,
     hint_text: str = "",
 ) -> pd.DataFrame:
+    base_columns = ["順位", "台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "同機種順位", "サンプル数", "不安材料", "根拠"]
     if df.empty:
-        return pd.DataFrame(columns=["順位", "台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "根拠"])
+        return pd.DataFrame(columns=base_columns)
 
     context = target_day_context(target_date, calendar_df, hint_text) if target_date else {}
     scoring_df = df[df["date"].dt.date < target_date].copy() if target_date else df.copy()
     if scoring_df.empty:
         scoring_df = df.copy()
+    if "date_only" not in scoring_df.columns:
+        scoring_df["date_only"] = scoring_df["date"].dt.date
+
+    scoring_df["store_adjusted_diff"] = scoring_df["diff_coins"] - scoring_df.groupby("date_only")["diff_coins"].transform("mean")
+    scoring_df["model_adjusted_diff"] = scoring_df["diff_coins"] - scoring_df.groupby(["date_only", "machine_name"])["diff_coins"].transform("mean")
 
     reference_date = target_date or scoring_df["date"].max().date()
     recent_start = reference_date - timedelta(days=max(recent_days, 1) - 1)
     model_avg = scoring_df.groupby("machine_name")["diff_coins"].mean().to_dict()
+    model_machine_stats = (
+        scoring_df.groupby(["machine_name", "machine_no"])
+        .agg(model_machine_avg=("diff_coins", "mean"), model_machine_samples=("date", "count"))
+        .reset_index()
+    )
+    model_machine_stats["model_count"] = model_machine_stats.groupby("machine_name")["machine_no"].transform("count")
+    model_machine_stats["model_rank"] = (
+        model_machine_stats.groupby("machine_name")["model_machine_avg"].rank(method="min", ascending=False).astype(int)
+    )
+    model_machine_lookup = model_machine_stats.set_index(["machine_name", "machine_no"]).to_dict("index")
     results: list[dict[str, Any]] = []
 
     for machine_no, group in scoring_df.groupby("machine_no"):
@@ -321,6 +355,9 @@ def calculate_target_ranking(
         recent = group[group["date"].dt.date >= recent_start]
         recent_avg = float(recent["diff_coins"].mean()) if not recent.empty else avg_diff
         recent_win = float(recent["win"].mean() * 100) if not recent.empty else win_rate
+        store_relative_avg = float(group["store_adjusted_diff"].mean())
+        recent_store_relative_avg = float(recent["store_adjusted_diff"].mean()) if not recent.empty else store_relative_avg
+        model_relative_avg = float(group["model_adjusted_diff"].mean())
         same_weekday = group[group["weekday"] == context.get("weekday")] if context else group.iloc[0:0]
         weekday_avg = float(same_weekday["diff_coins"].mean()) if not same_weekday.empty else 0
         weekday_win = float(same_weekday["win"].mean() * 100) if not same_weekday.empty else win_rate
@@ -340,36 +377,85 @@ def calculate_target_ranking(
         prev_diff = int(exact_prev2.iloc[-1]["diff_coins"]) if not exact_prev2.empty else (int((prev_before if not prev_before.empty else fallback_prev).iloc[-1]["diff_coins"]) if sample_count >= 2 else 0)
         machine_name = str(group.iloc[-1]["machine_name"])
         target_special_avg = special_avg if context.get("special_day") else normal_avg
-        hint_score, hint_reasons = _hint_score(int(machine_no), machine_name, str(context.get("hint_text", "")))
+        model_stat = model_machine_lookup.get((machine_name, int(machine_no)), {})
+        model_rank = int(model_stat.get("model_rank", 1) or 1)
+        model_count = int(model_stat.get("model_count", 1) or 1)
+        model_rank_label = f"{model_rank}/{model_count}位" if model_count > 1 else "1/1位"
+        model_position = 0.5 if model_count <= 1 else 1 - ((model_rank - 1) / max(model_count - 1, 1))
+        negative_streak = _consecutive_negative_count(group["diff_coins"].tail(3))
+        raw_hint_score, hint_reasons = _hint_score(int(machine_no), machine_name, str(context.get("hint_text", "")))
+        hint_alignment = any([avg_diff > 0, recent_avg > 0, store_relative_avg > 0, model_relative_avg > 0, weekday_avg > 0])
+        hint_score = raw_hint_score if hint_alignment else raw_hint_score * 0.55
 
         score = 45.0
         score += np.tanh(avg_diff / 1000) * 10
         score += np.tanh(recent_avg / 1200) * 14
+        score += np.tanh(store_relative_avg / 900) * 12
+        score += np.tanh(recent_store_relative_avg / 1000) * 8
+        score += np.tanh(model_relative_avg / 800) * 6
         score += (win_rate - 50) * 0.25
         score += np.tanh((avg_games - 2500) / 2500) * 8
         score += np.tanh(weekday_avg / 1000) * (10 if context else 0)
         score += np.tanh(target_special_avg / 1200) * (10 if context else 7)
         score += np.tanh(model_avg.get(machine_name, 0) / 1000) * 6
+        score += (model_position - 0.5) * (10 if model_count > 1 else 0)
         score += hint_score
 
         reasons: list[str] = []
+        risks: list[str] = []
         reasons.extend(hint_reasons)
         if avg_diff > 0:
             reasons.append(f"平均差枚+{avg_diff:.0f}")
+        if store_relative_avg > 200:
+            reasons.append(f"店平均より+{store_relative_avg:.0f}")
+        elif store_relative_avg < -300:
+            risks.append(f"店平均より{store_relative_avg:.0f}")
+        if model_relative_avg > 200:
+            reasons.append(f"同一機種平均より+{model_relative_avg:.0f}")
+        elif model_relative_avg < -300:
+            risks.append(f"同一機種平均より{model_relative_avg:.0f}")
+        if model_count >= 2 and model_rank <= max(1, int(np.ceil(model_count * 0.35))):
+            reasons.append(f"同一機種内{model_rank}/{model_count}位")
+        elif model_count >= 3 and model_rank >= max(2, int(np.ceil(model_count * 0.75))):
+            risks.append(f"同一機種内{model_rank}/{model_count}位で弱め")
         if recent_avg > avg_diff and recent_avg > 0:
             reasons.append("直近上向き")
+        if recent_avg < -500:
+            risks.append("直近弱い")
+        if recent_win < 40 and len(recent) >= 2:
+            risks.append("直近勝率低め")
         if context and not same_weekday.empty and weekday_avg > 0:
             reasons.append(f"{context['weekday']}曜良好")
         if context.get("special_day") and special_avg > 0:
             reasons.append("特定日良好")
         if avg_games >= 3000:
             reasons.append("平均G数高め")
+        elif avg_games < 1500:
+            risks.append("平均G数不足")
+        elif avg_games < 2500:
+            risks.append("稼働やや少なめ")
+        if sample_count < 3:
+            risks.append("サンプル少ない")
+        elif sample_count < 5:
+            risks.append("サンプルやや少なめ")
         if last_diff < 0 <= avg_diff:
             score += 5
             reasons.append("前日/直近凹みからの上げ狙い")
         if prev_diff < 0 and last_diff < 0 and avg_diff > 0:
             score += 4
             reasons.append("前々日まで凹み")
+        if negative_streak >= 2 and avg_diff > -300:
+            score += min(negative_streak, 3) * 2
+            reasons.append(f"直近{negative_streak}連続凹み")
+        if last_diff > 2500:
+            score -= 4
+            risks.append("前日出過ぎ")
+        if model_avg.get(machine_name, 0) < -300:
+            score -= 4
+            risks.append("機種全体弱め")
+        if raw_hint_score > 0 and not hint_alignment:
+            score -= 5
+            risks.append("X示唆はあるが過去データ弱め")
         if median_diff > 0:
             score += 3
             reasons.append("中央値プラス")
@@ -378,10 +464,22 @@ def calculate_target_ranking(
         if number_reason:
             reasons.append(number_reason)
 
-        reliability = _clip_score(35 + min(sample_count, 30) * 1.3 + np.tanh(avg_games / 3500) * 18 + min(len(same_weekday), 8) * 1.2)
+        reliability = 35 + min(sample_count, 30) * 1.3 + np.tanh(avg_games / 3500) * 18 + min(len(same_weekday), 8) * 1.2
+        if avg_games < 1500:
+            reliability -= 12
+        elif avg_games < 2500:
+            reliability -= 6
+        if sample_count < 3:
+            reliability -= 10
+        elif sample_count < 5:
+            reliability -= 5
+        reliability = _clip_score(reliability)
         expectation = (
             avg_diff * 0.25
             + recent_avg * 0.28
+            + store_relative_avg * 0.18
+            + recent_store_relative_avg * 0.15
+            + model_relative_avg * 0.08
             + weekday_avg * (0.18 if context else 0)
             + target_special_avg * (0.14 if context else 0.22)
             + model_avg.get(machine_name, 0) * 0.15
@@ -396,7 +494,10 @@ def calculate_target_ranking(
             "期待差枚": expectation,
             "高設定期待度": high_setting_score,
             "信頼度": reliability,
-            "根拠": " / ".join(reasons[:6]) if reasons else "サンプル不足のため弱い根拠",
+            "同機種順位": model_rank_label,
+            "サンプル数": sample_count,
+            "不安材料": _join_limited(risks, "大きな不安材料なし", 5),
+            "根拠": _join_limited(reasons, "サンプル不足のため弱い根拠", 7),
             "_recent_win": recent_win,
             "_samples": sample_count,
         }
@@ -416,7 +517,7 @@ def calculate_target_ranking(
     columns = ["順位"]
     if target_date:
         columns.extend(["対象日", "対象曜日", "特定日"])
-    columns.extend(["台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "根拠"])
+    columns.extend(["台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "同機種順位", "サンプル数", "不安材料", "根拠"])
     return ranking[columns]
 
 

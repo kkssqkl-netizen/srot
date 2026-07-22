@@ -28,6 +28,7 @@ def _diff_class(value) -> str:
 
 def _rank_card_html(row: dict) -> str:
     diff_value = row.get("期待差枚", 0)
+    risk = str(row.get("不安材料", "大きな不安材料なし"))
     return dedent(
         f"""
         <div class="rank-card {_rank_class(row)}">
@@ -53,6 +54,11 @@ def _rank_card_html(row: dict) -> str:
         <div class="rank-metric-label">信頼度</div>
         <div class="rank-metric-value">{escape(str(row.get("信頼度", 0)))}点</div>
         </div>
+        </div>
+        <div class="rank-chip-row">
+        <span class="rank-chip">同機種 {escape(str(row.get("同機種順位", "-")))}</span>
+        <span class="rank-chip">サンプル {escape(str(row.get("サンプル数", "-")))}件</span>
+        <span class="rank-chip risk">不安: {escape(risk)}</span>
         </div>
         <div class="rank-reason">根拠: {escape(str(row.get("根拠", "")))}</div>
         </div>
@@ -89,8 +95,13 @@ def _ranking_list_html(ranking) -> str:
                     f'<div class="rank-list-stat"><span>信頼度</span>{escape(str(row.get("信頼度", 0)))}点</div>',
                     f'<div class="rank-list-stat {_diff_class(diff_value)}"><span>期待差枚</span>{layout.format_diff(diff_value)}</div>',
                     f'<div class="rank-list-stat"><span>勝率</span>{layout.format_rate(row.get("勝率", 0))}</div>',
+                    f'<div class="rank-list-stat"><span>同機種順位</span>{escape(str(row.get("同機種順位", "-")))}</div>',
+                    f'<div class="rank-list-stat"><span>サンプル</span>{escape(str(row.get("サンプル数", "-")))}件</div>',
                     "</div>",
+                    '<div class="rank-list-texts">',
                     f'<div class="rank-list-reason"><span>根拠</span>{escape(str(row.get("根拠", "")))}</div>',
+                    f'<div class="rank-list-risk"><span>不安材料</span>{escape(str(row.get("不安材料", "大きな不安材料なし")))}</div>',
+                    "</div>",
                     "</div>",
                 ]
             )
@@ -140,10 +151,12 @@ def render(df, calendar_df, profile):
     with st.expander("根拠の見方"):
         st.markdown(
             "- `X示唆` は入力した店長Xメモ内の機種名、台番号、末尾、ゾロ目などを反映します。\n"
+            "- `店平均より+` は、店全体が強かった日の影響を差し引いても強い台です。\n"
+            "- `同一機種平均より+` と `同機種順位` は、同じ機種内での強さを見ます。\n"
             "- `直近上向き` は直近成績が過去平均より強い台です。\n"
             "- `前日/直近凹み` と `前々日まで凹み` は上げ狙いの材料です。\n"
-            "- `曜日良好`、`特定日良好`、`平均G数高め` は過去データからの加点です。\n"
-            "- `信頼度` はサンプル数と稼働量が多いほど上がります。"
+            "- `不安材料` はサンプル不足、G数不足、直近弱い、前日出過ぎ、機種全体弱めなどの減点要素です。\n"
+            "- `信頼度` はサンプル数と稼働量が多いほど上がり、不足すると下がります。"
         )
 
     st.caption("期待度は勝利保証ではなく、過去データと入力した示唆を使ったルールベース推定です。")

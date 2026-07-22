@@ -41,9 +41,12 @@ def test_filters_min_games_weekday_and_special():
 def test_score_calculation_returns_required_columns():
     df = analyzer.prepare_dataframe(_sample_df())
     ranking = analyzer.calculate_target_ranking(df, recent_days=7, limit=5)
-    assert list(ranking.columns) == ["順位", "台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "根拠"]
+    assert list(ranking.columns) == ["順位", "台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "同機種順位", "サンプル数", "不安材料", "根拠"]
     assert int(ranking.iloc[0]["台番号"]) == 101
     assert 0 <= ranking.iloc[0]["高設定期待度"] <= 100
+    assert ranking.iloc[0]["同機種順位"]
+    assert ranking.iloc[0]["サンプル数"] >= 1
+    assert ranking.iloc[0]["不安材料"]
 
 
 def test_target_ranking_uses_visit_date_and_x_hints():
@@ -71,3 +74,15 @@ def test_target_ranking_uses_visit_date_and_x_hints():
     assert row_103["対象日"] == "2026-07-04"
     assert row_103["特定日"] == "特定日"
     assert "X示唆" in row_103["根拠"]
+
+
+def test_ranking_surfaces_professional_risk_signals():
+    df = analyzer.prepare_dataframe(_sample_df())
+    ranking = analyzer.calculate_target_ranking(df, recent_days=7, limit=5)
+
+    low_sample = ranking[ranking["台番号"] == 102].iloc[0]
+
+    assert "不安材料" in ranking.columns
+    assert "同機種順位" in ranking.columns
+    assert "サンプル数" in ranking.columns
+    assert "サンプル" in low_sample["不安材料"] or "G数" in low_sample["不安材料"]
