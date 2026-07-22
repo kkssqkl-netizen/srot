@@ -51,6 +51,13 @@ class ParseError(AnaSloError):
     user_message = "ページ内の表を解析できませんでした。HTML構造が変わっている可能性があります。"
 
 
+class NoMachineDataError(ParseError):
+    user_message = (
+        "日別ページは確認できましたが、台番号・G数・差枚の詳細データが見つかりません。"
+        "対象日の詳細データが未公開、またはana-slo一覧で総差枚が「–」の日の可能性があります。"
+    )
+
+
 @dataclass(frozen=True)
 class FetchResult:
     html: str
@@ -482,7 +489,7 @@ def parse_ana_slo_html(html: str, source_url: str, expected_date: date | None = 
 
     records = [record.to_payload() for record in sorted(unique.values(), key=lambda item: item.machine_no)]
     if not records:
-        raise ParseError("台番号・G数・差枚を含む表が見つかりません。")
+        raise NoMachineDataError("台番号・G数・差枚を含む表が見つかりません。")
 
     return ImportResult(
         store_name=STORE_NAME,

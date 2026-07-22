@@ -97,6 +97,7 @@ def _render_url_import(profile: dict) -> None:
     st.subheader("ana-slo日別URL取込")
     source_url = st.text_input("日別ページURL", placeholder="https://ana-slo.com/2026-07-07-マルハン綾瀬上土棚店-data/")
     if st.button("URLから取得", type="primary", use_container_width=True):
+        target_date = None
         try:
             target_date = validate_daily_url(source_url.strip())
             limited, remaining = _is_session_rate_limited(source_url.strip())
@@ -120,7 +121,7 @@ def _render_url_import(profile: dict) -> None:
                 database.insert_import_log(
                     user_id=profile.get("id"),
                     source_url=source_url.strip(),
-                    target_date=None,
+                    target_date=str(target_date) if target_date else None,
                     status="error",
                     records_found=0,
                     records_added=0,
@@ -317,4 +318,3 @@ def render(df, calendar_df, profile):
         _render_csv_tools(df)
     with tab_logs:
         _render_logs()
-

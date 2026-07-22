@@ -6,6 +6,7 @@ import pytest
 
 from ana_slo_importer import (
     FetchResult,
+    NoMachineDataError,
     ParseError,
     TargetStoreError,
     UrlValidationError,
@@ -174,6 +175,12 @@ def test_upload_html_requires_target_store_text():
 
 
 def test_missing_table_raises_parse_error():
-    html = f"<html><body><h1>2026/07/07 {STORE_NAME}</h1><p>no table</p></body></html>"
-    with pytest.raises(ParseError):
+    html = f"""
+    <html><body>
+      <h1>2026/07/07 {STORE_NAME}</h1>
+      <p>このページには店舗サマリーだけがあり、台番号別の詳細データはまだありません。</p>
+      <p>総差枚、平均G数、勝率などの概要欄のみが表示されています。</p>
+    </body></html>
+    """
+    with pytest.raises(NoMachineDataError):
         parse_ana_slo_html(html, VALID_URL)
