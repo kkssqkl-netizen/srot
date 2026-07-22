@@ -89,6 +89,14 @@ def apply_filters(df: pd.DataFrame, filters: AnalysisFilters) -> pd.DataFrame:
     return out
 
 
+def _round_display_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    out = df.copy()
+    for col in columns:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0).round(0).astype(int)
+    return out
+
+
 def store_summary(df: pd.DataFrame) -> dict[str, Any]:
     if df.empty:
         return {
@@ -126,6 +134,7 @@ def daily_trends(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .rename(columns={"date_only": "date"})
     )
+    grouped = _round_display_columns(grouped, ["avg_diff", "win_rate", "avg_games"])
     return grouped.sort_values("date")
 
 
@@ -144,13 +153,14 @@ def weekday_trends(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
     out["weekday"] = pd.Categorical(out["weekday"], order, ordered=True)
+    out = _round_display_columns(out, ["avg_diff", "win_rate", "avg_games"])
     return out.sort_values("weekday")
 
 
 def special_day_trends(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["special_day", "avg_diff", "win_rate", "avg_games", "samples"])
-    return (
+    out = (
         df.groupby("special_day")
         .agg(
             avg_diff=("diff_coins", "mean"),
@@ -160,12 +170,13 @@ def special_day_trends(df: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index()
     )
+    return _round_display_columns(out, ["avg_diff", "win_rate", "avg_games"])
 
 
 def machine_name_trends(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["machine_name", "machines", "avg_games", "avg_diff", "win_rate", "samples"])
-    return (
+    out = (
         df.groupby("machine_name")
         .agg(
             machines=("machine_no", "nunique"),
@@ -177,6 +188,7 @@ def machine_name_trends(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .sort_values(["avg_diff", "samples"], ascending=[False, False])
     )
+    return _round_display_columns(out, ["avg_games", "avg_diff", "win_rate"])
 
 
 def _clip_score(value: float, low: float = 0.0, high: float = 100.0) -> float:
@@ -276,7 +288,7 @@ def calculate_target_ranking(df: pd.DataFrame, recent_days: int = 14, limit: int
     ranking.insert(0, "順位", range(1, len(ranking) + 1))
     ranking = ranking.head(limit).copy()
     for col in ["勝率", "期待差枚", "高設定期待度", "信頼度"]:
-        ranking[col] = ranking[col].round(1)
+        ranking[col] = ranking[col].round(0).astype(int)
     return ranking[["順位", "台番号", "機種名", "勝率", "期待差枚", "高設定期待度", "信頼度", "根拠"]]
 
 
@@ -289,7 +301,7 @@ def machine_detail(df: pd.DataFrame, machine_no: int) -> dict[str, Any]:
     group["prev2_diff"] = group["diff_coins"].shift(2)
     group["expectation_trend"] = (
         group["diff_coins"].rolling(7, min_periods=1).mean().rank(pct=True).fillna(0) * 100
-    )
+    ).round(0)
     stats = {
         "data": group,
         "win_rate": group["win"].mean() * 100,
@@ -318,6 +330,7 @@ def model_detail(df: pd.DataFrame, machine_name: str) -> dict[str, Any]:
         .reset_index()
         .sort_values("avg_diff", ascending=False)
     )
+    by_machine = _round_display_columns(by_machine, ["avg_diff", "win_rate"])
     return {
         "data": group,
         "machines": int(group["machine_no"].nunique()),

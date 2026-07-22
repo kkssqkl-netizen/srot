@@ -784,3 +784,59 @@ def import_from_page_text(text: str, source_url: str, expected_date: date | None
         records=records,
         fetch_method="pasted_text",
     )
+
+
+_PAGE_TEXT_URL_PATTERN = re.compile(
+    r"(?mi)^\s*(?:ANA-SLO-URL|SOURCE_URL|URL|元ページURL)\s*[:：]\s*(https?://[^\s]+)\s*$"
+)
+
+
+def _clean_marker_url(value: str) -> str:
+    return value.strip().strip("<>[](){}\"'")
+
+
+def split_page_text_bundle(text: str, default_source_url: str = "") -> list[tuple[str, str]]:
+    raw = (text or "").strip()
+    if not raw:
+        return []
+
+    matches = list(_PAGE_TEXT_URL_PATTERN.finditer(raw))
+    if not matches:
+        return [(default_source_url.strip(), raw)]
+
+    blocks: list[tuple[str, str]] = []
+    preamble = raw[: matches[0].start()].strip()
+    if preamble and default_source_url.strip():
+        blocks.append((default_source_url.strip(), preamble))
+
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
+        source_url = _clean_marker_url(match.group(1))
+        block_text = raw[match.start() : end].strip()
+        if block_text:
+            blocks.append((source_url, block_text))
+    return blocks
+
+
+def import_from_page_text_bundle(
+    text: str,
+    default_source_url: str = "",
+    default_date: date | None = None,
+) -> list[ImportResult]:
+    blocks = split_page_text_bundle(text, default_source_url=default_source_url)
+    if not blocks:
+        raise ParseError("貼り付け本文が空、または短すぎます。")
+
+    results: list[ImportResult] = []
+    errors: list[str] = []
+    for index, (source_url, block_text) in enumerate(blocks, start=1):
+        try:
+            expected_date = default_date if len(blocks) == 1 and not source_url else None
+            results.append(import_from_page_text(block_text, source_url=source_url, expected_date=expected_date))
+        except AnaSloError as exc:
+            errors.append(f"{index}件目: {exc.user_message} {exc}")
+
+    if errors:
+        detail = " / ".join(errors[:5])
+        raise ParseError(f"一括本文の一部を解析できませんでした。{detail}")
+    return results

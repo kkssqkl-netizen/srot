@@ -7,10 +7,19 @@ import streamlit as st
 
 import auth
 import database
-from ana_slo_importer import AnaSloError, import_from_page_text, import_from_uploaded_html, import_from_url, validate_daily_url
+from ana_slo_importer import AnaSloError, import_from_page_text_bundle, import_from_uploaded_html, import_from_url, validate_daily_url
 from components import layout
 from config import MIN_IMPORT_INTERVAL_SECONDS, STORE_NAME
 from services import data_service
+
+
+_COPY_BOOKMARKLET = (
+    "javascript:(async()=>{const t=['ANA-SLO-URL: '+location.href,"
+    "'ANA-SLO-TITLE: '+document.title,"
+    "'ANA-SLO-COPIED-AT: '+new Date().toISOString(),'',document.body.innerText].join('\\n');"
+    "try{await navigator.clipboard.writeText(t);alert('コピーしました')}"
+    "catch(e){prompt('コピーしてください',t)}})()"
+)
 
 
 def _decode_upload(uploaded_file) -> str:
@@ -56,6 +65,28 @@ def _records_dataframe(records: list[dict]) -> pd.DataFrame:
     return df[[col for col in columns if col in df.columns]]
 
 
+def _set_import_preview(results: list) -> None:
+    records = [record for result in results for record in result.records]
+    dates = sorted({result.target_date for result in results})
+    import_entries = [
+        {
+            "source_url": result.source_url,
+            "target_date": result.target_date,
+            "records_found": len(result.records),
+            "fetch_method": result.fetch_method,
+        }
+        for result in results
+    ]
+    st.session_state["import_preview"] = {
+        "source_url": results[0].source_url if len(results) == 1 else f"bulk_pasted_text:{len(results)}pages",
+        "target_date": results[0].target_date if len(results) == 1 else dates[0],
+        "target_dates": dates,
+        "records": records,
+        "fetch_method": results[0].fetch_method if len(results) == 1 else "bulk_pasted_text",
+        "import_entries": import_entries,
+    }
+
+
 def _save_preview(profile: dict) -> None:
     preview = st.session_state.get("import_preview")
     if not preview:
@@ -63,16 +94,24 @@ def _save_preview(profile: dict) -> None:
         return
     try:
         summary = database.upsert_machine_records(preview["records"], st.session_state.get("access_token"))
-        database.insert_import_log(
-            user_id=profile.get("id"),
-            source_url=preview["source_url"],
-            target_date=str(preview["target_date"]),
-            status="success",
-            records_found=len(preview["records"]),
-            records_added=summary["records_added"],
-            error_message=None,
-            access_token=st.session_state.get("access_token"),
-        )
+        log_entries = preview.get("import_entries") or [
+            {
+                "source_url": preview["source_url"],
+                "target_date": preview["target_date"],
+                "records_found": len(preview["records"]),
+            }
+        ]
+        for entry in log_entries:
+            database.insert_import_log(
+                user_id=profile.get("id"),
+                source_url=entry["source_url"],
+                target_date=str(entry["target_date"]),
+                status="success",
+                records_found=int(entry["records_found"]),
+                records_added=summary["records_added"] if len(log_entries) == 1 else 0,
+                error_message=None,
+                access_token=st.session_state.get("access_token"),
+            )
         data_service.clear_data_cache()
         st.success(
             f"登録しました。追加 {summary['records_added']}件 / 更新 {summary['records_updated']}件 / 合計 {summary['records_total']}件"
@@ -107,12 +146,7 @@ def _render_url_import(profile: dict) -> None:
             with st.spinner("ページを取得して解析しています..."):
                 result = import_from_url(source_url.strip())
             _mark_session_import(source_url.strip())
-            st.session_state["import_preview"] = {
-                "source_url": source_url.strip(),
-                "target_date": result.target_date,
-                "records": result.records,
-                "fetch_method": result.fetch_method,
-            }
+            _set_import_preview([result])
             st.success(f"{target_date} のデータを {len(result.records)} 件取得しました（{result.fetch_method}）。")
         except AnaSloError as exc:
             st.error(exc.user_message)
@@ -147,13 +181,12 @@ def _render_html_import() -> None:
         try:
             html = _decode_upload(uploaded)
             with st.spinner("HTMLを解析しています..."):
-                result = import_from_uploaded_html(html, source_url=source_url.strip() or f"uploaded:{uploaded.name}", expected_date=expected_date)
-            st.session_state["import_preview"] = {
-                "source_url": result.source_url,
-                "target_date": result.target_date,
-                "records": result.records,
-                "fetch_method": "uploaded_html",
-            }
+                result = import_from_uploaded_html(
+                    html,
+                    source_url=source_url.strip() or f"uploaded:{uploaded.name}",
+                    expected_date=None if source_url.strip() else expected_date,
+                )
+            _set_import_preview([result])
             st.success(f"{result.target_date} のデータを {len(result.records)} 件解析しました。")
         except AnaSloError as exc:
             st.error(exc.user_message)
@@ -165,23 +198,29 @@ def _render_html_import() -> None:
 
 def _render_text_import() -> None:
     st.subheader("コピー本文取込")
-    source_url = st.text_input("元ページURL（対象店舗の日別URL）", key="text_source_url")
-    expected_date = st.date_input("日付（URLから取れない本文用）", key="text_expected_date")
-    page_text = st.text_area("コピーしたページ本文", height=240, key="text_import_body")
+    with st.expander("コピー支援ブックマークレット"):
+        st.code(_COPY_BOOKMARKLET, language="javascript")
+        st.caption("ブックマークとして保存し、ana-slo日別ページ上で押すとURLと本文をまとめてコピーできます。")
+    source_url = st.text_input("元ページURL（単一ページ本文用）", key="text_source_url")
+    expected_date = st.date_input("日付（URLがない単一ページ本文用）", key="text_expected_date")
+    page_text = st.text_area("コピーしたページ本文（複数日まとめ貼り付け可）", height=280, key="text_import_body")
     if st.button("本文を解析", use_container_width=True):
         if not page_text.strip():
             st.warning("ページ本文を貼り付けてください。")
             return
         try:
             with st.spinner("本文を解析しています..."):
-                result = import_from_page_text(page_text, source_url=source_url.strip(), expected_date=expected_date)
-            st.session_state["import_preview"] = {
-                "source_url": result.source_url,
-                "target_date": result.target_date,
-                "records": result.records,
-                "fetch_method": result.fetch_method,
-            }
-            st.success(f"{result.target_date} のデータを {len(result.records)} 件解析しました。")
+                results = import_from_page_text_bundle(
+                    page_text,
+                    default_source_url=source_url.strip(),
+                    default_date=None if source_url.strip() else expected_date,
+                )
+            _set_import_preview(results)
+            total_records = sum(len(result.records) for result in results)
+            if len(results) == 1:
+                st.success(f"{results[0].target_date} のデータを {total_records} 件解析しました。")
+            else:
+                st.success(f"{len(results)}日分のデータを {total_records} 件解析しました。")
         except AnaSloError as exc:
             st.error(exc.user_message)
             st.caption(str(exc))
@@ -196,7 +235,12 @@ def _render_preview(profile: dict) -> None:
     if not preview:
         st.info("URL取得またはHTML解析を実行すると、ここにプレビューが表示されます。")
         return
-    st.write(f"対象日: {preview['target_date']} / 件数: {len(preview['records'])} / 方法: {preview.get('fetch_method')}")
+    target_dates = preview.get("target_dates") or [preview["target_date"]]
+    if len(target_dates) > 1:
+        date_label = f"{len(target_dates)}日分（{target_dates[0]}〜{target_dates[-1]}）"
+    else:
+        date_label = str(target_dates[0])
+    st.write(f"対象日: {date_label} / 件数: {len(preview['records'])} / 方法: {preview.get('fetch_method')}")
     preview_df = _records_dataframe(preview["records"])
     st.dataframe(layout.style_diff_columns(preview_df, ["diff_coins"]), use_container_width=True, hide_index=True)
     confirm = st.checkbox("内容を確認しました。Supabaseへ登録します。")

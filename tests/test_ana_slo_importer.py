@@ -14,6 +14,7 @@ from ana_slo_importer import (
     _is_missing_playwright_browser_error,
     contains_target_store,
     import_from_page_text,
+    import_from_page_text_bundle,
     import_from_uploaded_html,
     is_target_store_url,
     parse_ana_slo_html,
@@ -194,6 +195,29 @@ def test_import_from_page_text_extracts_tab_delimited_rows():
     record_485 = next(row for row in result.records if row["machine_no"] == 485)
     assert record_485["machine_name"] == "かぐや様は告らせたい"
     assert result.fetch_method == "pasted_text"
+
+
+def test_import_from_page_text_bundle_extracts_multiple_days():
+    second_url = VALID_URL.replace("2026-07-07", "2026-07-08")
+    bundle = f"""
+    ANA-SLO-URL: {VALID_URL}
+    ANA-SLO-TITLE: 2026/07/07 {STORE_NAME} データまとめ
+    2026/07/07 {STORE_NAME} データまとめ
+    沖ドキ!GOLD
+    台番号\tG数\t差枚\tBB\tRB
+    725\t4,796\t+2,300\t39\t17
+
+    ANA-SLO-URL: {second_url}
+    ANA-SLO-TITLE: 2026/07/08 {STORE_NAME} データまとめ
+    2026/07/08 {STORE_NAME} データまとめ
+    末尾5
+    機種名\t台番号\tG数\t差枚\tBB\tRB\tART
+    スマスロ北斗の拳\t545\t6,312\t+1,600\t80\t18\t0
+    """
+    results = import_from_page_text_bundle(bundle)
+    assert [result.target_date.isoformat() for result in results] == ["2026-07-07", "2026-07-08"]
+    assert sum(len(result.records) for result in results) == 2
+    assert results[1].records[0]["source_url"] == second_url
 
 
 def test_import_from_url_retries_playwright_when_static_html_has_no_table(monkeypatch):

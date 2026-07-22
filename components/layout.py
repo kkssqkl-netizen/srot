@@ -99,8 +99,8 @@ def format_diff(value: float | int | None) -> str:
 
 def format_rate(value: float | int | None) -> str:
     if value is None or pd.isna(value):
-        return "0.0%"
-    return f"{float(value):.1f}%"
+        return "0%"
+    return f"{float(value):.0f}%"
 
 
 def render_filter_panel(df: pd.DataFrame, key_prefix: str, show_machine_filters: bool = True) -> AnalysisFilters:
@@ -170,5 +170,9 @@ def style_diff_columns(df: pd.DataFrame, diff_columns: Iterable[str]):
             return "color: #2563eb; font-weight: 700;"
         return "color: #475569;"
 
-    return df.style.map(color, subset=[col for col in diff_columns if col in df.columns])
-
+    numeric_formats = {
+        col: "{:,.0f}"
+        for col in df.columns
+        if pd.api.types.is_numeric_dtype(df[col]) and not pd.api.types.is_bool_dtype(df[col])
+    }
+    return df.style.map(color, subset=[col for col in diff_columns if col in df.columns]).format(numeric_formats)
