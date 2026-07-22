@@ -136,6 +136,34 @@ def test_parse_markdownish_table_extracts_machine_rows():
     assert record_490["machine_name"] == "アクダマドライブ"
 
 
+def test_parse_line_block_table_extracts_machine_rows():
+    html = f"""
+    <html><body>
+      <h1>2026/07/07 {STORE_NAME} データまとめ</h1>
+      <section>
+        <h4>沖ドキ!GOLD</h4>
+        <div>データ表示</div><div>グラフ表示</div>
+        <div>台番号</div><div>G数</div><div>差枚</div><div>BB</div><div>RB</div><div>合成確率</div>
+        <div>725</div><div>4,796</div><div>+2,300</div><div>39</div><div>17</div><div>1/85.6</div>
+        <div>726</div><div>3,323</div><div>+1,300</div><div>27</div><div>8</div><div>1/94.9</div>
+        <div>平均</div><div>4,046</div><div>+288</div><div>26</div><div>12</div><div>1/105.8</div>
+      </section>
+      <section>
+        <h4>末尾7</h4>
+        <div>機種名</div><div>台番号</div><div>G数</div><div>差枚</div><div>BB</div><div>RB</div><div>ART</div>
+        <div>スマスロ北斗の拳</div><div>547</div><div>5,886</div><div>+4,100</div><div>93</div><div>17</div><div>0</div>
+      </section>
+    </body></html>
+    """
+    result = parse_ana_slo_html(html, VALID_URL)
+    assert len(result.records) == 3
+    record_725 = next(row for row in result.records if row["machine_no"] == 725)
+    assert record_725["machine_name"] == "沖ドキ!GOLD"
+    assert record_725["diff_coins"] == 2300
+    record_547 = next(row for row in result.records if row["machine_no"] == 547)
+    assert record_547["machine_name"] == "スマスロ北斗の拳"
+
+
 def test_import_from_url_retries_playwright_when_static_html_has_no_table(monkeypatch):
     calls = []
 

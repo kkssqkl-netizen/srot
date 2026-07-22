@@ -403,6 +403,70 @@ def _is_separator_cells(cells: list[str]) -> bool:
     return bool(cells) and all(re.fullmatch(r":?-{2,}:?", cell.replace(" ", "")) for cell in cells)
 
 
+_LINE_TABLE_HEADERS = {
+    "機種名",
+    "機種",
+    "台番号",
+    "台番",
+    "G数",
+    "総G数",
+    "ゲーム数",
+    "総ゲーム数",
+    "総回転数",
+    "回転数",
+    "差枚",
+    "差枚数",
+    "BB",
+    "BB回数",
+    "RB",
+    "RB回数",
+    "AT",
+    "ART",
+    "AT回数",
+    "ART回数",
+    "初当たり",
+    "初当り",
+    "初当たり回数",
+    "初当り回数",
+    "合成確率",
+    "BB確率",
+    "RB確率",
+    "AT確率",
+    "ART確率",
+}
+_NORMALIZED_LINE_TABLE_HEADERS = {normalize_store_marker(header) for header in _LINE_TABLE_HEADERS}
+_LINE_TABLE_NOISE = {
+    "データ表示",
+    "グラフ表示",
+    "設置機種一覧へ戻る",
+    "詳細データ",
+    "機種名クリックで詳細データへジャンプ出来ます。",
+}
+
+
+def _is_line_header_cell(line: str) -> bool:
+    return normalize_store_marker(line) in _NORMALIZED_LINE_TABLE_HEADERS
+
+
+def _looks_like_heading(line: str) -> bool:
+    text = normalize_text(line).lstrip("#").strip()
+    if not text or text in _LINE_TABLE_NOISE:
+        return False
+    if _is_line_header_cell(text):
+        return False
+    if re.fullmatch(r"[+-]?\d[\d,]*(?:\.\d+)?%?(?:枚|G|回)?", text):
+        return False
+    return len(text) <= 80
+
+
+def _machine_hint_before(lines: list[str], header_index: int) -> str:
+    for previous in reversed(lines[max(0, header_index - 12) : header_index]):
+        text = normalize_text(previous).lstrip("#").strip()
+        if _looks_like_heading(text):
+            return text
+    return ""
+
+
 def _parse_markdownish_tables(text: str, target_date: date, source_url: str, fetched_at: datetime) -> list[MachineRecord]:
     lines = [normalize_text(line) for line in text.splitlines()]
     lines = [line for line in lines if line]
@@ -448,6 +512,53 @@ def _parse_markdownish_tables(text: str, target_date: date, source_url: str, fet
     return records
 
 
+def _parse_line_block_tables(text: str, target_date: date, source_url: str, fetched_at: datetime) -> list[MachineRecord]:
+    lines = [normalize_text(line) for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    records: list[MachineRecord] = []
+    index = 0
+
+    while index < len(lines):
+        if not _is_line_header_cell(lines[index]):
+            index += 1
+            continue
+
+        header_start = index
+        headers: list[str] = []
+        while index < len(lines) and _is_line_header_cell(lines[index]) and len(headers) < 16:
+            headers.append(lines[index])
+            index += 1
+
+        if (
+            _find_col(headers, ["台番号", "台番"]) is None
+            or _find_col(headers, ["G数", "総G数", "ゲーム数", "総ゲーム数", "総回転数", "回転数"]) is None
+            or _find_col(headers, ["差枚", "差枚数"]) is None
+        ):
+            continue
+
+        row_width = len(headers)
+        machine_hint = "" if _find_col(headers, ["機種名", "機種"]) is not None else _machine_hint_before(lines, header_start)
+
+        while index + row_width <= len(lines):
+            if _is_line_header_cell(lines[index]):
+                break
+            if lines[index] in _LINE_TABLE_NOISE:
+                index += 1
+                continue
+            cells = lines[index : index + row_width]
+            record = _record_from_cells(headers, cells, machine_hint, target_date, source_url, fetched_at)
+            if record:
+                records.append(record)
+                index += row_width
+                continue
+            if normalize_text(lines[index]) == "平均":
+                index += row_width
+                break
+            index += 1
+
+    return records
+
+
 def parse_ana_slo_html(html: str, source_url: str, expected_date: date | None = None) -> ImportResult:
     if not html or len(html) < 100:
         raise ParseError("HTMLが空、または短すぎます。")
@@ -487,9 +598,19 @@ def parse_ana_slo_html(html: str, source_url: str, expected_date: date | None = 
         for record in _parse_markdownish_tables(fallback_text, target_date, source_url, fetched_at):
             unique[(record.date, record.machine_no)] = record
 
+    if not unique:
+        fallback_text = "\n".join([title_text, meta_text, soup.get_text("\n", strip=True)])
+        for record in _parse_line_block_tables(fallback_text, target_date, source_url, fetched_at):
+            unique[(record.date, record.machine_no)] = record
+
     records = [record.to_payload() for record in sorted(unique.values(), key=lambda item: item.machine_no)]
     if not records:
-        raise NoMachineDataError("台番号・G数・差枚を含む表が見つかりません。")
+        detail = (
+            "台番号・G数・差枚を含む表が見つかりません。"
+            f" HTML長={len(html)} / table数={len(soup.find_all('table'))} / "
+            f"台番号文字={'あり' if '台番号' in page_text else 'なし'}"
+        )
+        raise NoMachineDataError(detail)
 
     return ImportResult(
         store_name=STORE_NAME,
