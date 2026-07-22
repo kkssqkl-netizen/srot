@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from html import escape
 
-import plotly.express as px
 import streamlit as st
 
 import analyzer
@@ -11,6 +11,55 @@ from components import layout
 
 
 JST = timezone(timedelta(hours=9))
+
+
+def _diff_class(value) -> str:
+    try:
+        numeric = float(value)
+    except Exception:
+        return ""
+    if numeric > 0:
+        return "positive"
+    if numeric < 0:
+        return "negative"
+    return ""
+
+
+def _render_top_cards(ranking):
+    cards = []
+    for row in ranking.head(3).to_dict("records"):
+        diff_value = row.get("期待差枚", 0)
+        cards.append(
+            f"""
+            <div class="rank-card">
+                <div class="rank-head">
+                    <div class="rank-place">{escape(str(row.get("順位", "")))}位</div>
+                    <div class="rank-machine-no">{escape(str(row.get("台番号", "")))}番台</div>
+                </div>
+                <div class="rank-machine">{escape(str(row.get("機種名", "")))}</div>
+                <div class="rank-metrics">
+                    <div class="rank-metric">
+                        <div class="rank-metric-label">高設定期待度</div>
+                        <div class="rank-metric-value">{escape(str(row.get("高設定期待度", 0)))}点</div>
+                    </div>
+                    <div class="rank-metric">
+                        <div class="rank-metric-label">期待差枚</div>
+                        <div class="rank-metric-value {_diff_class(diff_value)}">{layout.format_diff(diff_value)}</div>
+                    </div>
+                    <div class="rank-metric">
+                        <div class="rank-metric-label">勝率</div>
+                        <div class="rank-metric-value">{layout.format_rate(row.get("勝率", 0))}</div>
+                    </div>
+                    <div class="rank-metric">
+                        <div class="rank-metric-label">信頼度</div>
+                        <div class="rank-metric-value">{escape(str(row.get("信頼度", 0)))}点</div>
+                    </div>
+                </div>
+                <div class="rank-reason">根拠: {escape(str(row.get("根拠", "")))}</div>
+            </div>
+            """
+        )
+    st.markdown(f'<div class="ranking-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
 def render(df, calendar_df, profile):
@@ -46,17 +95,24 @@ def render(df, calendar_df, profile):
         st.warning("条件に一致するデータがありません。")
         return
 
-    fig = px.bar(
-        ranking.sort_values("高設定期待度"),
-        x="高設定期待度",
-        y="台番号",
-        orientation="h",
-        color="期待差枚",
-        color_continuous_scale=["#2563eb", "#f8fafc", "#dc2626"],
-        title=f"{target_date} の高設定期待度スコア",
-        labels=layout.COLUMN_LABELS,
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(layout.style_diff_columns(ranking, ["期待差枚"]), use_container_width=True, hide_index=True)
+    st.subheader("上位候補")
+    _render_top_cards(ranking)
 
-    st.caption("スコアは対象日の曜日、特定日、店長X示唆メモ、差枚、G数、直近成績、前日・前々日、機種傾向、サンプル数を使ったルールベース推定です。")
+    st.subheader("一覧")
+    st.dataframe(
+        layout.style_diff_columns(ranking, ["期待差枚"]),
+        use_container_width=True,
+        hide_index=True,
+        column_config=layout.table_column_config(ranking),
+    )
+
+    with st.expander("根拠の見方"):
+        st.markdown(
+            "- `X示唆` は入力した店長Xメモ内の機種名、台番号、末尾、ゾロ目などを反映します。\n"
+            "- `直近上向き` は直近成績が過去平均より強い台です。\n"
+            "- `前日/直近凹み` と `前々日まで凹み` は上げ狙いの材料です。\n"
+            "- `曜日良好`、`特定日良好`、`平均G数高め` は過去データからの加点です。\n"
+            "- `信頼度` はサンプル数と稼働量が多いほど上がります。"
+        )
+
+    st.caption("期待度は勝利保証ではなく、過去データと入力した示唆を使ったルールベース推定です。")

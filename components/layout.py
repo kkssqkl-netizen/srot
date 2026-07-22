@@ -90,9 +90,87 @@ def setup_page() -> None:
             font-weight: 600;
         }
         div[data-testid="stDataFrame"] { width: 100%; }
+        .ranking-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+            gap: 0.75rem;
+            margin: 0.35rem 0 1rem;
+        }
+        .rank-card {
+            min-width: 0;
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 0.85rem;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        }
+        .rank-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.5rem;
+            align-items: flex-start;
+            flex-wrap: wrap;
+        }
+        .rank-place {
+            color: #0f172a;
+            font-size: 1.05rem;
+            font-weight: 800;
+        }
+        .rank-machine-no {
+            color: #475569;
+            font-size: 0.86rem;
+            font-weight: 700;
+        }
+        .rank-machine {
+            margin-top: 0.35rem;
+            color: #0f172a;
+            font-size: 0.96rem;
+            font-weight: 700;
+            line-height: 1.38;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+        .rank-metrics {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.45rem;
+            margin-top: 0.7rem;
+        }
+        .rank-metric {
+            min-width: 0;
+            background: #f8fafc;
+            border: 1px solid #eef2f7;
+            border-radius: 6px;
+            padding: 0.45rem 0.5rem;
+        }
+        .rank-metric-label {
+            color: #64748b;
+            font-size: 0.72rem;
+            line-height: 1.25;
+        }
+        .rank-metric-value {
+            margin-top: 0.1rem;
+            color: #0f172a;
+            font-size: 0.95rem;
+            font-weight: 800;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+        }
+        .rank-metric-value.positive { color: #dc2626; }
+        .rank-metric-value.negative { color: #2563eb; }
+        .rank-reason {
+            margin-top: 0.65rem;
+            color: #334155;
+            font-size: 0.83rem;
+            line-height: 1.55;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
         @media (max-width: 640px) {
             .block-container { padding-left: 0.85rem; padding-right: 0.85rem; }
             [data-testid="stMetric"] { padding: 0.55rem 0.6rem; }
+            .ranking-grid { grid-template-columns: 1fr; }
+            .rank-metrics { grid-template-columns: 1fr 1fr; }
         }
         </style>
         """,
@@ -221,9 +299,28 @@ def style_diff_columns(df: pd.DataFrame, diff_columns: Iterable[str]):
             return "color: #2563eb; font-weight: 700;"
         return "color: #475569;"
 
-    numeric_formats = {
-        col: "{:,.0f}"
-        for col in display_df.columns
-        if pd.api.types.is_numeric_dtype(display_df[col]) and not pd.api.types.is_bool_dtype(display_df[col])
-    }
+    numeric_formats = {}
+    for col in display_df.columns:
+        if pd.api.types.is_numeric_dtype(display_df[col]) and not pd.api.types.is_bool_dtype(display_df[col]):
+            numeric_formats[col] = "{:,.0f}%" if str(col) == "勝率" else "{:,.0f}"
     return display_df.style.map(color, subset=[col for col in localized_diff_columns if col in display_df.columns]).format(numeric_formats)
+
+
+def table_column_config(df: pd.DataFrame) -> dict:
+    localized_columns = [COLUMN_LABELS.get(str(col), str(col)) for col in df.columns]
+    config: dict = {}
+    if "機種名" in localized_columns:
+        config["機種名"] = st.column_config.TextColumn("機種名", width="large")
+    if "根拠" in localized_columns:
+        config["根拠"] = st.column_config.TextColumn("根拠", width="large")
+    if "メモ" in localized_columns:
+        config["メモ"] = st.column_config.TextColumn("メモ", width="large")
+    if "勝率" in localized_columns:
+        config["勝率"] = st.column_config.NumberColumn("勝率", format="%d%%", width="small")
+    for col in ["順位", "台番号", "高設定期待度", "信頼度"]:
+        if col in localized_columns:
+            config[col] = st.column_config.NumberColumn(col, format="%d", width="small")
+    for col in ["対象曜日", "特定日"]:
+        if col in localized_columns:
+            config[col] = st.column_config.TextColumn(col, width="small")
+    return config

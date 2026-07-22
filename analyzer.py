@@ -353,10 +353,6 @@ def calculate_target_ranking(
         score += hint_score
 
         reasons: list[str] = []
-        if context:
-            reasons.append(f"対象日{context['weekday']}曜")
-            if context.get("special_day"):
-                reasons.append("対象日は特定日")
         reasons.extend(hint_reasons)
         if avg_diff > 0:
             reasons.append(f"平均差枚+{avg_diff:.0f}")
