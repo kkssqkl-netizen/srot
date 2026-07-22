@@ -100,9 +100,26 @@ def setup_page() -> None:
             min-width: 0;
             background: #ffffff;
             border: 1px solid #e5e7eb;
+            border-left: 4px solid #94a3b8;
             border-radius: 8px;
             padding: 0.85rem;
             box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        }
+        .rank-card.rank-1 {
+            background: #fffbeb;
+            border-color: #f59e0b;
+        }
+        .rank-card.rank-2 {
+            background: #f8fafc;
+            border-color: #94a3b8;
+        }
+        .rank-card.rank-3 {
+            background: #fff7ed;
+            border-color: #b45309;
+        }
+        .rank-card.rank-pick {
+            background: #f0f9ff;
+            border-color: #0ea5e9;
         }
         .rank-head {
             display: flex;
@@ -166,11 +183,86 @@ def setup_page() -> None:
             overflow-wrap: anywhere;
             word-break: break-word;
         }
+        .rank-list {
+            display: grid;
+            gap: 0.55rem;
+            margin-top: 0.25rem;
+        }
+        .rank-list-row {
+            display: grid;
+            grid-template-columns: minmax(160px, 0.9fr) minmax(210px, 0.8fr) minmax(300px, 1.5fr);
+            gap: 0.75rem;
+            align-items: start;
+            min-width: 0;
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-left: 4px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 0.7rem 0.8rem;
+        }
+        .rank-list-row.rank-1 { border-left-color: #f59e0b; background: #fffbeb; }
+        .rank-list-row.rank-2 { border-left-color: #94a3b8; }
+        .rank-list-row.rank-3 { border-left-color: #b45309; }
+        .rank-list-row.rank-pick { border-left-color: #0ea5e9; }
+        .rank-list-main,
+        .rank-list-stats,
+        .rank-list-reason { min-width: 0; }
+        .rank-list-rank {
+            color: #0f172a;
+            font-size: 0.94rem;
+            font-weight: 800;
+            line-height: 1.35;
+        }
+        .rank-list-machine {
+            margin-top: 0.2rem;
+            color: #334155;
+            font-size: 0.86rem;
+            font-weight: 700;
+            line-height: 1.45;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+        .rank-list-machine span {
+            display: inline-block;
+            margin-right: 0.45rem;
+            color: #64748b;
+            white-space: nowrap;
+        }
+        .rank-list-stats {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.35rem;
+        }
+        .rank-list-stat {
+            min-width: 0;
+            color: #0f172a;
+            font-size: 0.84rem;
+            font-weight: 800;
+            line-height: 1.35;
+        }
+        .rank-list-stat span,
+        .rank-list-reason span {
+            display: block;
+            color: #64748b;
+            font-size: 0.72rem;
+            font-weight: 600;
+            line-height: 1.3;
+        }
+        .rank-list-reason {
+            color: #334155;
+            font-size: 0.84rem;
+            line-height: 1.55;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            white-space: normal;
+        }
         @media (max-width: 640px) {
             .block-container { padding-left: 0.85rem; padding-right: 0.85rem; }
             [data-testid="stMetric"] { padding: 0.55rem 0.6rem; }
             .ranking-grid { grid-template-columns: 1fr; }
             .rank-metrics { grid-template-columns: 1fr 1fr; }
+            .rank-list-row { grid-template-columns: 1fr; gap: 0.55rem; }
+            .rank-list-stats { grid-template-columns: 1fr 1fr; }
         }
         </style>
         """,
@@ -227,6 +319,13 @@ def format_rate(value: float | int | None) -> str:
 
 def localize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns={col: COLUMN_LABELS.get(str(col), str(col)) for col in df.columns})
+
+
+def render_html(html: str) -> None:
+    if hasattr(st, "html"):
+        st.html(html)
+    else:
+        st.markdown(html, unsafe_allow_html=True)
 
 
 def render_filter_panel(df: pd.DataFrame, key_prefix: str, show_machine_filters: bool = True) -> AnalysisFilters:

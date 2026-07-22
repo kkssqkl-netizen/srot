@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from html import escape
+from textwrap import dedent
 
 import streamlit as st
 
@@ -25,41 +26,76 @@ def _diff_class(value) -> str:
     return ""
 
 
-def _render_top_cards(ranking):
+def _rank_card_html(row: dict) -> str:
+    diff_value = row.get("期待差枚", 0)
+    return dedent(
+        f"""
+        <div class="rank-card {_rank_class(row)}">
+        <div class="rank-head">
+        <div class="rank-place">{escape(str(row.get("順位", "")))}位</div>
+        <div class="rank-machine-no">{escape(str(row.get("台番号", "")))}番台</div>
+        </div>
+        <div class="rank-machine">{escape(str(row.get("機種名", "")))}</div>
+        <div class="rank-metrics">
+        <div class="rank-metric">
+        <div class="rank-metric-label">高設定期待度</div>
+        <div class="rank-metric-value">{escape(str(row.get("高設定期待度", 0)))}点</div>
+        </div>
+        <div class="rank-metric">
+        <div class="rank-metric-label">期待差枚</div>
+        <div class="rank-metric-value {_diff_class(diff_value)}">{layout.format_diff(diff_value)}</div>
+        </div>
+        <div class="rank-metric">
+        <div class="rank-metric-label">勝率</div>
+        <div class="rank-metric-value">{layout.format_rate(row.get("勝率", 0))}</div>
+        </div>
+        <div class="rank-metric">
+        <div class="rank-metric-label">信頼度</div>
+        <div class="rank-metric-value">{escape(str(row.get("信頼度", 0)))}点</div>
+        </div>
+        </div>
+        <div class="rank-reason">根拠: {escape(str(row.get("根拠", "")))}</div>
+        </div>
+        """
+    ).strip()
+
+
+def _rank_class(row: dict) -> str:
+    rank = int(row.get("順位", 0) or 0)
+    return f"rank-{rank}" if 1 <= rank <= 3 else "rank-pick"
+
+
+def _render_top_cards(ranking, top_n: int = 5):
     cards = []
-    for row in ranking.head(3).to_dict("records"):
+    for row in ranking.head(top_n).to_dict("records"):
+        cards.append(_rank_card_html(row))
+    layout.render_html(f'<div class="ranking-grid">{"".join(cards)}</div>')
+
+
+def _ranking_list_html(ranking) -> str:
+    rows = []
+    for row in ranking.to_dict("records"):
         diff_value = row.get("期待差枚", 0)
-        cards.append(
-            f"""
-            <div class="rank-card">
-                <div class="rank-head">
-                    <div class="rank-place">{escape(str(row.get("順位", "")))}位</div>
-                    <div class="rank-machine-no">{escape(str(row.get("台番号", "")))}番台</div>
-                </div>
-                <div class="rank-machine">{escape(str(row.get("機種名", "")))}</div>
-                <div class="rank-metrics">
-                    <div class="rank-metric">
-                        <div class="rank-metric-label">高設定期待度</div>
-                        <div class="rank-metric-value">{escape(str(row.get("高設定期待度", 0)))}点</div>
-                    </div>
-                    <div class="rank-metric">
-                        <div class="rank-metric-label">期待差枚</div>
-                        <div class="rank-metric-value {_diff_class(diff_value)}">{layout.format_diff(diff_value)}</div>
-                    </div>
-                    <div class="rank-metric">
-                        <div class="rank-metric-label">勝率</div>
-                        <div class="rank-metric-value">{layout.format_rate(row.get("勝率", 0))}</div>
-                    </div>
-                    <div class="rank-metric">
-                        <div class="rank-metric-label">信頼度</div>
-                        <div class="rank-metric-value">{escape(str(row.get("信頼度", 0)))}点</div>
-                    </div>
-                </div>
-                <div class="rank-reason">根拠: {escape(str(row.get("根拠", "")))}</div>
-            </div>
-            """
+        rows.append(
+            "".join(
+                [
+                    f'<div class="rank-list-row {_rank_class(row)}">',
+                    '<div class="rank-list-main">',
+                    f'<div class="rank-list-rank">{escape(str(row.get("順位", "")))}位</div>',
+                    f'<div class="rank-list-machine"><span>{escape(str(row.get("台番号", "")))}番台</span>{escape(str(row.get("機種名", "")))}</div>',
+                    "</div>",
+                    '<div class="rank-list-stats">',
+                    f'<div class="rank-list-stat"><span>期待度</span>{escape(str(row.get("高設定期待度", 0)))}点</div>',
+                    f'<div class="rank-list-stat"><span>信頼度</span>{escape(str(row.get("信頼度", 0)))}点</div>',
+                    f'<div class="rank-list-stat {_diff_class(diff_value)}"><span>期待差枚</span>{layout.format_diff(diff_value)}</div>',
+                    f'<div class="rank-list-stat"><span>勝率</span>{layout.format_rate(row.get("勝率", 0))}</div>',
+                    "</div>",
+                    f'<div class="rank-list-reason"><span>根拠</span>{escape(str(row.get("根拠", "")))}</div>',
+                    "</div>",
+                ]
+            )
         )
-    st.markdown(f'<div class="ranking-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
+    return f'<div class="rank-list">{"".join(rows)}</div>'
 
 
 def render(df, calendar_df, profile):
@@ -95,16 +131,11 @@ def render(df, calendar_df, profile):
         st.warning("条件に一致するデータがありません。")
         return
 
-    st.subheader("上位候補")
-    _render_top_cards(ranking)
+    st.subheader("上位候補（5位まで）")
+    _render_top_cards(ranking, top_n=min(5, len(ranking)))
 
     st.subheader("一覧")
-    st.dataframe(
-        layout.style_diff_columns(ranking, ["期待差枚"]),
-        use_container_width=True,
-        hide_index=True,
-        column_config=layout.table_column_config(ranking),
-    )
+    layout.render_html(_ranking_list_html(ranking))
 
     with st.expander("根拠の見方"):
         st.markdown(
