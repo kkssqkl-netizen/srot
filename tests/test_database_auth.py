@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import socket
+
 import auth
+import config
 import database
+import pytest
 
 
 def test_compute_upsert_summary_counts_added_and_updated():
@@ -39,3 +43,28 @@ def test_permission_checks():
     assert auth.can("viewer", "view_analysis")
     assert not auth.can("viewer", "delete_data")
     assert not auth.can(None, "view_analysis")
+
+
+def test_sign_in_distinguishes_dns_error(monkeypatch):
+    class FakeAuth:
+        def sign_in_with_password(self, _credentials):
+            raise socket.gaierror(-2, "Name or service not known")
+
+    class FakeClient:
+        auth = FakeAuth()
+
+    monkeypatch.setattr(database, "get_supabase_client", lambda: FakeClient())
+
+    with pytest.raises(auth.AuthFlowError) as excinfo:
+        auth.sign_in("user@example.com", "password")
+
+    assert "DNS" in excinfo.value.user_message
+    assert "SUPABASE_URL" in excinfo.value.guidance
+
+
+def test_supabase_settings_rejects_placeholder_url(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://your-project-ref.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "real-anon-key")
+
+    with pytest.raises(RuntimeError, match="サンプル値"):
+        config.get_supabase_settings()
