@@ -46,6 +46,8 @@ def test_permission_checks():
 
 
 def test_sign_in_distinguishes_dns_error(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://abcdefghijklmnopqrst.supabase.co")
+
     class FakeAuth:
         def sign_in_with_password(self, _credentials):
             raise socket.gaierror(-2, "Name or service not known")
@@ -59,7 +61,7 @@ def test_sign_in_distinguishes_dns_error(monkeypatch):
         auth.sign_in("user@example.com", "password")
 
     assert "DNS" in excinfo.value.user_message
-    assert "SUPABASE_URL" in excinfo.value.guidance
+    assert "abcdefghijklmnopqrst.supabase.co" in excinfo.value.guidance
 
 
 def test_supabase_settings_rejects_placeholder_url(monkeypatch):
@@ -68,3 +70,31 @@ def test_supabase_settings_rejects_placeholder_url(monkeypatch):
 
     with pytest.raises(RuntimeError, match="サンプル値"):
         config.get_supabase_settings()
+
+
+@pytest.mark.parametrize(
+    ("url", "message"),
+    [
+        ("https://xxxxx.supabase.co", "project-ref"),
+        ("https://supabase.com/dashboard/project/example", "Project URLだけ"),
+        ("https://db.abcdefghijklmnopqrst.supabase.co", "Database接続用ホスト"),
+        ("https://abcdefghijklmnopqrst.supabase.co/rest/v1", "Project URLだけ"),
+        ("https://abcdefghijklmnopqrst.supabase.co?key=value", "Project URLだけ"),
+    ],
+)
+def test_supabase_settings_rejects_non_project_urls(monkeypatch, url, message):
+    monkeypatch.setenv("SUPABASE_URL", url)
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "real-anon-key")
+
+    with pytest.raises(RuntimeError, match=message):
+        config.get_supabase_settings()
+
+
+def test_supabase_settings_accepts_project_url_with_wrapping_quotes(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", '"https://abcdefghijklmnopqrst.supabase.co/"')
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "real-anon-key")
+
+    settings = config.get_supabase_settings()
+
+    assert settings.url == "https://abcdefghijklmnopqrst.supabase.co"
+
