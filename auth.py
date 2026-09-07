@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 from typing import Any
 
 import streamlit as st
@@ -23,6 +24,151 @@ PERMISSIONS: dict[str, set[str]] = {
     },
     ROLE_VIEWER: {"view_analysis"},
 }
+
+
+class AuthFlowError(RuntimeError):
+    """User-facing error raised during login/signup flows."""
+
+    def __init__(self, user_message: str, detail: str = "", guidance: str = "") -> None:
+        super().__init__(detail or user_message)
+        self.user_message = user_message
+        self.detail = detail
+        self.guidance = guidance
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _exception_detail(exc: BaseException) -> str:
+    return " / ".join(f"{type(item).__name__}: {item}" for item in _exception_chain(exc))
+
+
+def _exception_text(exc: BaseException) -> str:
+    return _exception_detail(exc).lower()
+
+
+def _exception_status_code(exc: BaseException) -> int | None:
+    for item in _exception_chain(exc):
+        for attr in ("status_code", "code"):
+            value = getattr(item, attr, None)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+        response = getattr(item, "response", None)
+        value = getattr(response, "status_code", None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _connection_or_config_error(exc: BaseException) -> AuthFlowError | None:
+    detail = _exception_detail(exc)
+    text = detail.lower()
+    chain = _exception_chain(exc)
+
+    if "パッケージがインストールされていません" in text or "no module named" in text:
+        return AuthFlowError(
+            "必要なPythonパッケージが不足しています。",
+            detail,
+            "requirements.txt に supabase が含まれていること、Streamlit Cloud で依存関係のインストールが成功していることを確認してください。",
+        )
+
+    if "supabase_" in text or "streamlit secrets" in text or "サンプル値" in text or "形式が不正" in text:
+        return AuthFlowError(
+            "Supabase設定に問題があります。",
+            detail,
+            "Streamlit Secrets の SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY を確認してください。",
+        )
+
+    if any(isinstance(item, socket.gaierror) for item in chain) or any(
+        marker in text
+        for marker in (
+            "name or service not known",
+            "temporary failure in name resolution",
+            "nodename nor servname provided",
+            "getaddrinfo failed",
+            "nameresolutionerror",
+        )
+    ):
+        return AuthFlowError(
+            "Supabaseに接続できませんでした（DNS/URL解決エラー）。",
+            detail,
+            "SUPABASE_URL の project-ref が正しいか、`https://xxxxx.supabase.co` の形式になっているか確認してください。",
+        )
+
+    if any(isinstance(item, (TimeoutError, ConnectionError)) for item in chain) or any(
+        marker in text
+        for marker in (
+            "connecterror",
+            "connection refused",
+            "connection reset",
+            "network is unreachable",
+            "timed out",
+            "timeout",
+            "all connection attempts failed",
+            "certificate verify failed",
+        )
+    ):
+        return AuthFlowError(
+            "Supabaseに接続できませんでした（ネットワークエラー）。",
+            detail,
+            "一時的な通信障害、Supabaseプロジェクト停止、または Streamlit Cloud から Supabase への到達性を確認してください。",
+        )
+
+    return None
+
+
+def _classify_sign_in_error(exc: BaseException) -> AuthFlowError:
+    connection_error = _connection_or_config_error(exc)
+    if connection_error:
+        return connection_error
+
+    text = _exception_text(exc)
+    status_code = _exception_status_code(exc)
+
+    if "email not confirmed" in text or "email_not_confirmed" in text:
+        return AuthFlowError(
+            "メール認証が完了していない可能性があります。",
+            _exception_detail(exc),
+            "Supabase Authentication の対象ユーザーで Confirmed が有効になっているか確認してください。",
+        )
+
+    if status_code in {400, 401, 403} or any(
+        marker in text
+        for marker in (
+            "invalid login credentials",
+            "invalid credentials",
+            "invalid email or password",
+            "invalid_grant",
+        )
+    ):
+        return AuthFlowError(
+            "認証に失敗しました。メールアドレスとパスワードを確認してください。",
+            _exception_detail(exc),
+        )
+
+    return AuthFlowError("ログイン処理中に予期しないエラーが発生しました。", _exception_detail(exc))
+
+
+def _classify_profile_error(exc: BaseException) -> AuthFlowError:
+    connection_error = _connection_or_config_error(exc)
+    if connection_error:
+        return connection_error
+
+    return AuthFlowError(
+        "ログインは成功しましたが、プロフィール情報の取得または作成に失敗しました。",
+        _exception_detail(exc),
+        "Supabase SQL Editor で sql/001_schema.sql が実行済みか、profiles テーブルと RLS ポリシーを確認してください。",
+    )
 
 
 def can(role: str | None, action: str) -> bool:
@@ -67,24 +213,47 @@ def ensure_profile(user_id: str, email: str) -> dict[str, Any]:
 
 
 def sign_in(email: str, password: str) -> dict[str, Any]:
-    client = database.get_supabase_client()
-    response = client.auth.sign_in_with_password({"email": email, "password": password})
-    _store_session(response)
-    return ensure_profile(response.user.id, response.user.email or email)
+    try:
+        client = database.get_supabase_client()
+        response = client.auth.sign_in_with_password({"email": email, "password": password})
+    except Exception as exc:
+        raise _classify_sign_in_error(exc) from exc
+
+    try:
+        _store_session(response)
+    except Exception as exc:
+        raise AuthFlowError("Supabase Authのログイン応答を処理できませんでした。", _exception_detail(exc)) from exc
+    try:
+        return ensure_profile(response.user.id, response.user.email or email)
+    except Exception as exc:
+        raise _classify_profile_error(exc) from exc
 
 
 def sign_up(email: str, password: str, display_name: str = "") -> dict[str, Any]:
-    client = database.get_supabase_client()
-    response = client.auth.sign_up(
-        {
-            "email": email,
-            "password": password,
-            "options": {"data": {"display_name": display_name or email.split("@")[0]}},
-        }
-    )
+    try:
+        client = database.get_supabase_client()
+        response = client.auth.sign_up(
+            {
+                "email": email,
+                "password": password,
+                "options": {"data": {"display_name": display_name or email.split("@")[0]}},
+            }
+        )
+    except Exception as exc:
+        connection_error = _connection_or_config_error(exc)
+        if connection_error:
+            raise connection_error from exc
+        raise AuthFlowError("ユーザー作成に失敗しました。", _exception_detail(exc)) from exc
+
     if response.session:
-        _store_session(response)
-        return ensure_profile(response.user.id, response.user.email or email)
+        try:
+            _store_session(response)
+        except Exception as exc:
+            raise AuthFlowError("Supabase Authのユーザー作成応答を処理できませんでした。", _exception_detail(exc)) from exc
+        try:
+            return ensure_profile(response.user.id, response.user.email or email)
+        except Exception as exc:
+            raise _classify_profile_error(exc) from exc
     return {"email": email, "role": ROLE_VIEWER, "pending_confirmation": True}
 
 
@@ -124,8 +293,14 @@ def render_login() -> None:
                 profile = sign_in(email.strip(), password)
                 st.success(f"ログインしました（権限: {profile.get('role', ROLE_VIEWER)}）")
                 st.rerun()
+            except AuthFlowError as exc:
+                st.error(exc.user_message)
+                if exc.guidance:
+                    st.warning(exc.guidance)
+                if exc.detail:
+                    st.caption(exc.detail)
             except Exception as exc:
-                st.error("ログインできませんでした。メールアドレスとパスワードを確認してください。")
+                st.error("ログイン処理中に予期しないエラーが発生しました。")
                 st.caption(str(exc))
 
     with tab_signup:
@@ -143,6 +318,12 @@ def render_login() -> None:
                 else:
                     st.success("ユーザーを作成しました。")
                     st.rerun()
+            except AuthFlowError as exc:
+                st.error(exc.user_message)
+                if exc.guidance:
+                    st.warning(exc.guidance)
+                if exc.detail:
+                    st.caption(exc.detail)
             except Exception as exc:
                 st.error("ユーザー作成に失敗しました。")
                 st.warning("SupabaseのSQL未実行、Secrets設定ミス、またはAuthenticationのEmail provider無効が主な原因です。")
