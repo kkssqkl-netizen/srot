@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -86,7 +87,7 @@ def get_required_secret(name: str) -> str:
 
 
 def _looks_like_placeholder(value: str) -> bool:
-    lowered = value.lower()
+    lowered = value.strip().lower()
     return any(
         marker in lowered
         for marker in (
@@ -96,18 +97,64 @@ def _looks_like_placeholder(value: str) -> bool:
             "your-service-role-key",
             "example.supabase.co",
         )
-    )
+    ) or bool(re.fullmatch(r"x{3,}", lowered))
+
+
+def _strip_wrapping_quotes(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1].strip()
+    return stripped
+
+
+def get_configured_supabase_host() -> str:
+    """Return only the configured host so diagnostics never expose API keys."""
+
+    raw_url = get_secret("SUPABASE_URL", "") or ""
+    parsed = urlparse(_strip_wrapping_quotes(raw_url))
+    return parsed.hostname or "(判定不能)"
 
 
 def _normalize_supabase_url(url: str) -> str:
+    url = _strip_wrapping_quotes(url)
     if _looks_like_placeholder(url):
         raise RuntimeError("SUPABASE_URL がサンプル値のままです。実際の Supabase Project URL を設定してください。")
     if any(char.isspace() for char in url):
         raise RuntimeError("SUPABASE_URL に空白文字が含まれています。前後や途中の空白を削除してください。")
 
     parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise RuntimeError("SUPABASE_URL の形式が不正です。例: https://your-project-ref.supabase.co")
+
+    host = parsed.hostname.lower().rstrip(".")
+    path = parsed.path.rstrip("/")
+    if parsed.username or parsed.password or parsed.port or parsed.query or parsed.fragment or path:
+        raise RuntimeError(
+            "SUPABASE_URL にはProject URLだけを設定してください。/rest/v1 などのパス、ポート、クエリは不要です。"
+        )
+    if host == "supabase.com" or host.endswith(".supabase.com"):
+        raise RuntimeError(
+            "SUPABASE_URL にSupabase DashboardのURLが設定されています。Project SettingsのProject URLを設定してください。"
+        )
+    if host.startswith("db.") and host.endswith(".supabase.co"):
+        raise RuntimeError(
+            "SUPABASE_URL にDatabase接続用ホストが設定されています。Project SettingsのProject URLを設定してください。"
+        )
+    if host.endswith(".supabase.co"):
+        project_ref = host[: -len(".supabase.co")]
+        if (
+            not project_ref
+            or "." in project_ref
+            or not re.fullmatch(r"[a-z0-9]+", project_ref)
+            or re.fullmatch(r"x{3,}", project_ref)
+        ):
+            raise RuntimeError(
+                "SUPABASE_URL のproject-refが不正またはサンプル値です。Dashboardに表示されたProject URLをそのまま設定してください。"
+            )
+    elif host not in {"localhost", "127.0.0.1", "::1"}:
+        raise RuntimeError(
+            "SUPABASE_URL は通常 https://<project-ref>.supabase.co です。DashboardのProject URLをそのまま設定してください。"
+        )
     return url.rstrip("/")
 
 
@@ -135,3 +182,4 @@ def get_supabase_settings(require_service_role: bool = False) -> SupabaseSetting
 def get_admin_emails() -> set[str]:
     raw = get_secret("APP_ADMIN_EMAILS", "") or ""
     return {email.strip().lower() for email in raw.split(",") if email.strip()}
+
