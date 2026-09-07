@@ -57,7 +57,7 @@ def _get_streamlit_secret(name: str) -> Any | None:
             return st.secrets[name]
 
         supabase = st.secrets.get("supabase", {})
-        for key in _SUPABASE_SECRET_ALIASES.get(name, ()): 
+        for key in _SUPABASE_SECRET_ALIASES.get(name, ()):
             if key in supabase:
                 return supabase[key]
     except Exception:
