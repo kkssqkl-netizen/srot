@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 
 APP_NAME = "スロット期待値"
@@ -37,6 +38,14 @@ class SupabaseSettings:
     service_role_key: str | None = None
 
 
+_SUPABASE_SECRET_ALIASES = {
+    "SUPABASE_URL": ("url", "SUPABASE_URL"),
+    "SUPABASE_ANON_KEY": ("anon_key", "SUPABASE_ANON_KEY"),
+    "SUPABASE_SERVICE_ROLE_KEY": ("service_role_key", "SUPABASE_SERVICE_ROLE_KEY"),
+    "APP_ADMIN_EMAILS": ("APP_ADMIN_EMAILS", "admin_emails"),
+}
+
+
 def _get_streamlit_secret(name: str) -> Any | None:
     try:
         import streamlit as st
@@ -48,15 +57,9 @@ def _get_streamlit_secret(name: str) -> Any | None:
             return st.secrets[name]
 
         supabase = st.secrets.get("supabase", {})
-        mapped = {
-            "SUPABASE_URL": "url",
-            "SUPABASE_ANON_KEY": "anon_key",
-            "SUPABASE_SERVICE_ROLE_KEY": "service_role_key",
-        }
-        if name in mapped and mapped[name] in supabase:
-            return supabase[mapped[name]]
-        if name == "APP_ADMIN_EMAILS" and name in supabase:
-            return supabase[name]
+        for key in _SUPABASE_SECRET_ALIASES.get(name, ()): 
+            if key in supabase:
+                return supabase[key]
     except Exception:
         return None
 
@@ -66,11 +69,11 @@ def _get_streamlit_secret(name: str) -> Any | None:
 def get_secret(name: str, default: str | None = None) -> str | None:
     value = os.getenv(name)
     if value not in (None, ""):
-        return value
+        return value.strip()
 
     value = _get_streamlit_secret(name)
     if value not in (None, ""):
-        return str(value)
+        return str(value).strip()
 
     return default
 
@@ -82,11 +85,47 @@ def get_required_secret(name: str) -> str:
     return value
 
 
+def _looks_like_placeholder(value: str) -> bool:
+    lowered = value.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "your-project-ref",
+            "your-supabase",
+            "your-anon-key",
+            "your-service-role-key",
+            "example.supabase.co",
+        )
+    )
+
+
+def _normalize_supabase_url(url: str) -> str:
+    if _looks_like_placeholder(url):
+        raise RuntimeError("SUPABASE_URL がサンプル値のままです。実際の Supabase Project URL を設定してください。")
+    if any(char.isspace() for char in url):
+        raise RuntimeError("SUPABASE_URL に空白文字が含まれています。前後や途中の空白を削除してください。")
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("SUPABASE_URL の形式が不正です。例: https://your-project-ref.supabase.co")
+    return url.rstrip("/")
+
+
+def _normalize_supabase_key(name: str, value: str | None) -> str | None:
+    if value is None:
+        return None
+    if _looks_like_placeholder(value):
+        raise RuntimeError(f"{name} がサンプル値のままです。Supabase の実際の API key を設定してください。")
+    if any(char.isspace() for char in value):
+        raise RuntimeError(f"{name} に空白文字が含まれています。コピー時に混入した改行や空白を削除してください。")
+    return value
+
+
 def get_supabase_settings(require_service_role: bool = False) -> SupabaseSettings:
     settings = SupabaseSettings(
-        url=get_required_secret("SUPABASE_URL"),
-        anon_key=get_required_secret("SUPABASE_ANON_KEY"),
-        service_role_key=get_secret("SUPABASE_SERVICE_ROLE_KEY"),
+        url=_normalize_supabase_url(get_required_secret("SUPABASE_URL")),
+        anon_key=_normalize_supabase_key("SUPABASE_ANON_KEY", get_required_secret("SUPABASE_ANON_KEY")) or "",
+        service_role_key=_normalize_supabase_key("SUPABASE_SERVICE_ROLE_KEY", get_secret("SUPABASE_SERVICE_ROLE_KEY")),
     )
     if require_service_role and not settings.service_role_key:
         raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY が設定されていないため、この管理操作は実行できません。")
