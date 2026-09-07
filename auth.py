@@ -7,7 +7,7 @@ from typing import Any
 
 import streamlit as st
 
-from config import ROLE_ADMIN, ROLE_VIEWER, VALID_ROLES, get_admin_emails
+from config import ROLE_ADMIN, ROLE_VIEWER, VALID_ROLES, get_admin_emails, get_configured_supabase_host
 import database
 
 
@@ -99,10 +99,11 @@ def _connection_or_config_error(exc: BaseException) -> AuthFlowError | None:
             "nameresolutionerror",
         )
     ):
+        configured_host = get_configured_supabase_host()
         return AuthFlowError(
             "Supabaseに接続できませんでした（DNS/URL解決エラー）。",
             detail,
-            "SUPABASE_URL の project-ref が正しいか、`https://xxxxx.supabase.co` の形式になっているか確認してください。",
+            f"現在の接続先は `{configured_host}` です。Supabase DashboardのProject URLと完全に一致するか確認してください。",
         )
 
     if any(isinstance(item, (TimeoutError, ConnectionError)) for item in chain) or any(
@@ -344,3 +345,4 @@ def require_admin() -> dict[str, Any]:
         st.error("権限不足です。管理者のみ利用できます。")
         st.stop()
     return profile
+
