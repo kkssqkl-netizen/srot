@@ -9,7 +9,9 @@ from config import VALID_ROLES
 
 
 def render(df, calendar_df, profile):
-    auth.require_admin()
+    if not auth.can(profile.get("role"), "manage_users"):
+        st.error("権限不足です。管理者のみ利用できます。")
+        st.stop()
     st.title("ユーザー管理")
     st.caption("権限変更は admin のみ実行できます。初回管理者は README の手順で作成してください。")
 

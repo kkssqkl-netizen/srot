@@ -366,7 +366,9 @@ def _render_registered_dates(df: pd.DataFrame) -> None:
 
 
 def render(df, calendar_df, profile):
-    auth.require_admin()
+    if not auth.can(profile.get("role"), "import_data"):
+        st.error("権限不足です。管理者のみ利用できます。")
+        st.stop()
     st.title("管理画面")
     st.caption("1URLずつ手動実行する設計です。CAPTCHA回避やアクセス制限の不正な突破は行いません。")
 
