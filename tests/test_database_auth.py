@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import socket
 from types import SimpleNamespace
 
@@ -52,6 +54,33 @@ def test_persistent_cookie_encrypts_and_expires(monkeypatch):
 
     assert "refresh-token-value" not in encoded
     assert auth._decode_refresh_token(encoded) == "refresh-token-value"
+
+
+def test_access_token_expiry_detection(monkeypatch):
+    def token(exp):
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+        return f"header.{payload}.signature"
+
+    monkeypatch.setattr(auth.time, "time", lambda: 1_000)
+    assert auth._access_token_expires_soon(token(1_030))
+    assert not auth._access_token_expires_soon(token(2_000))
+    assert not auth._access_token_expires_soon("not-a-jwt")
+
+
+def test_current_profile_refreshes_expired_session(monkeypatch):
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": 1}).encode()).decode().rstrip("=")
+    auth.st.session_state.clear()
+    auth.st.session_state.update(
+        access_token=f"header.{payload}.signature",
+        refresh_token="refresh-token",
+        user={"id": "user-id", "email": "user@example.com"},
+        profile={"id": "user-id", "role": "admin"},
+    )
+    monkeypatch.setattr(auth, "_refresh_session", lambda token: {"role": "admin", "token": token})
+
+    profile = auth.current_profile()
+
+    assert profile == {"role": "admin", "token": "refresh-token"}
 
 
 def test_restore_session_rotates_cookie(monkeypatch):

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import socket
+import time
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -27,6 +28,7 @@ import database
 SESSION_COOKIE_NAME = "srot_auth_session"
 SESSION_COOKIE_DAYS = 30
 SESSION_COOKIE_VERSION = 1
+SESSION_COOKIE_PENDING_KEY = "_pending_session_cookie"
 
 PERMISSIONS: dict[str, set[str]] = {
     ROLE_ADMIN: {
@@ -239,6 +241,19 @@ def _persist_session_cookie(refresh_token: str) -> None:
     )
 
 
+def _flush_pending_session_cookie() -> None:
+    """Render a second cookie write after login-triggered reruns.
+
+    Streamlit may rerun before a component rendered during the login callback
+    reaches the browser. Repeating the write on the resulting authenticated
+    page gives the component a full render cycle to persist the cookie.
+    """
+
+    refresh_token = st.session_state.pop(SESSION_COOKIE_PENDING_KEY, None)
+    if refresh_token:
+        _persist_session_cookie(str(refresh_token))
+
+
 def _delete_session_cookie() -> None:
     manager = _get_cookie_manager()
     if manager.get(SESSION_COOKIE_NAME):
@@ -256,6 +271,19 @@ def _store_session(auth_response: Any, *, persist: bool = True) -> None:
     }
     if persist:
         _persist_session_cookie(session.refresh_token)
+        st.session_state[SESSION_COOKIE_PENDING_KEY] = session.refresh_token
+
+
+def _access_token_expires_soon(access_token: str, leeway_seconds: int = 60) -> bool:
+    """Read the JWT expiry without trusting the payload for authorization."""
+
+    try:
+        payload = access_token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        expires_at = int(json.loads(base64.urlsafe_b64decode(payload))["exp"])
+        return expires_at <= int(time.time()) + leeway_seconds
+    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return False
 
 
 def _refresh_session(refresh_token: str) -> dict[str, Any]:
@@ -351,7 +379,7 @@ def sign_out() -> None:
     access_token = st.session_state.get("access_token")
     refresh_token = st.session_state.get("refresh_token")
     _delete_session_cookie()
-    for key in ("access_token", "refresh_token", "user", "profile", "import_preview"):
+    for key in ("access_token", "refresh_token", "user", "profile", "import_preview", SESSION_COOKIE_PENDING_KEY):
         st.session_state.pop(key, None)
     try:
         client = database.get_supabase_client()
@@ -365,6 +393,17 @@ def sign_out() -> None:
 def current_profile(refresh: bool = False) -> dict[str, Any] | None:
     if not st.session_state.get("access_token") or not st.session_state.get("user"):
         return restore_session()
+    if _access_token_expires_soon(str(st.session_state["access_token"])):
+        refresh_token = st.session_state.get("refresh_token")
+        if not refresh_token:
+            sign_out()
+            return None
+        try:
+            return _refresh_session(str(refresh_token))
+        except Exception:
+            sign_out()
+            return None
+    _flush_pending_session_cookie()
     if refresh or "profile" not in st.session_state:
         user = st.session_state["user"]
         profile = database.get_profile(user["id"], st.session_state["access_token"])
