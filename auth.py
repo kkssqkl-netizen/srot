@@ -198,7 +198,6 @@ def is_admin(profile: dict[str, Any] | None = None) -> bool:
     return bool(profile and profile.get("role") == ROLE_ADMIN)
 
 
-@st.cache_resource
 def _get_cookie_manager() -> stx.CookieManager:
     return stx.CookieManager(key="srot_auth_cookie_manager")
 
