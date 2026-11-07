@@ -9,5 +9,7 @@ playwright>=1.45
 plotly>=5.22
 statsmodels>=0.14
 python-dotenv>=1.0
+cryptography>=43.0
+extra-streamlit-components>=0.1.80
 pytest>=8.2
 

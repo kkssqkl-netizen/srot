@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
+import base64
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 import socket
 from typing import Any
 
+from cryptography.fernet import Fernet, InvalidToken
+import extra_streamlit_components as stx
 import streamlit as st
 
-from config import ROLE_ADMIN, ROLE_VIEWER, VALID_ROLES, get_admin_emails, get_configured_supabase_host
+from config import (
+    ROLE_ADMIN,
+    ROLE_VIEWER,
+    VALID_ROLES,
+    get_admin_emails,
+    get_configured_supabase_host,
+    get_session_cookie_secret,
+)
 import database
 
+
+SESSION_COOKIE_NAME = "srot_auth_session"
+SESSION_COOKIE_DAYS = 30
+SESSION_COOKIE_VERSION = 1
 
 PERMISSIONS: dict[str, set[str]] = {
     ROLE_ADMIN: {
@@ -181,7 +198,55 @@ def is_admin(profile: dict[str, Any] | None = None) -> bool:
     return bool(profile and profile.get("role") == ROLE_ADMIN)
 
 
-def _store_session(auth_response: Any) -> None:
+@st.cache_resource
+def _get_cookie_manager() -> stx.CookieManager:
+    return stx.CookieManager(key="srot_auth_cookie_manager")
+
+
+def _cookie_cipher() -> Fernet:
+    material = f"srot-session-cookie-v1:{get_session_cookie_secret()}".encode("utf-8")
+    key = base64.urlsafe_b64encode(hashlib.sha256(material).digest())
+    return Fernet(key)
+
+
+def _encode_refresh_token(refresh_token: str) -> str:
+    payload = json.dumps(
+        {"version": SESSION_COOKIE_VERSION, "refresh_token": refresh_token},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return _cookie_cipher().encrypt(payload).decode("ascii")
+
+
+def _decode_refresh_token(cookie_value: str) -> str:
+    decrypted = _cookie_cipher().decrypt(
+        cookie_value.encode("ascii"),
+        ttl=SESSION_COOKIE_DAYS * 24 * 60 * 60,
+    )
+    payload = json.loads(decrypted.decode("utf-8"))
+    if payload.get("version") != SESSION_COOKIE_VERSION or not payload.get("refresh_token"):
+        raise InvalidToken
+    return str(payload["refresh_token"])
+
+
+def _persist_session_cookie(refresh_token: str) -> None:
+    _get_cookie_manager().set(
+        SESSION_COOKIE_NAME,
+        _encode_refresh_token(refresh_token),
+        key="set_srot_auth_session",
+        path="/",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=SESSION_COOKIE_DAYS),
+        secure=True,
+        same_site="strict",
+    )
+
+
+def _delete_session_cookie() -> None:
+    manager = _get_cookie_manager()
+    if manager.get(SESSION_COOKIE_NAME):
+        manager.delete(SESSION_COOKIE_NAME, key="delete_srot_auth_session")
+
+
+def _store_session(auth_response: Any, *, persist: bool = True) -> None:
     session = auth_response.session
     user = auth_response.user
     st.session_state["access_token"] = session.access_token
@@ -190,6 +255,31 @@ def _store_session(auth_response: Any) -> None:
         "id": user.id,
         "email": user.email,
     }
+    if persist:
+        _persist_session_cookie(session.refresh_token)
+
+
+def _refresh_session(refresh_token: str) -> dict[str, Any]:
+    client = database.get_supabase_client()
+    response = client.auth.refresh_session(refresh_token)
+    _store_session(response)
+    return ensure_profile(response.user.id, response.user.email or "")
+
+
+def restore_session() -> dict[str, Any] | None:
+    """Restore and rotate a Supabase session from the encrypted browser cookie."""
+
+    cookie_value = _get_cookie_manager().get(SESSION_COOKIE_NAME)
+    if not cookie_value:
+        return None
+    try:
+        refresh_token = _decode_refresh_token(str(cookie_value))
+        return _refresh_session(refresh_token)
+    except Exception:
+        _delete_session_cookie()
+        for key in ("access_token", "refresh_token", "user", "profile"):
+            st.session_state.pop(key, None)
+        return None
 
 
 def ensure_profile(user_id: str, email: str) -> dict[str, Any]:
@@ -259,17 +349,23 @@ def sign_up(email: str, password: str, display_name: str = "") -> dict[str, Any]
 
 
 def sign_out() -> None:
+    access_token = st.session_state.get("access_token")
+    refresh_token = st.session_state.get("refresh_token")
+    _delete_session_cookie()
     for key in ("access_token", "refresh_token", "user", "profile", "import_preview"):
         st.session_state.pop(key, None)
     try:
-        database.get_supabase_client().auth.sign_out()
+        client = database.get_supabase_client()
+        if access_token and refresh_token:
+            client.auth.set_session(access_token, refresh_token)
+        client.auth.sign_out()
     except Exception:
         pass
 
 
 def current_profile(refresh: bool = False) -> dict[str, Any] | None:
     if not st.session_state.get("access_token") or not st.session_state.get("user"):
-        return None
+        return restore_session()
     if refresh or "profile" not in st.session_state:
         user = st.session_state["user"]
         profile = database.get_profile(user["id"], st.session_state["access_token"])

@@ -8,6 +8,7 @@ Streamlit + Supabase で動く、ログイン付きの ana-slo 日別ページ�
 ## 実装内容
 
 - Supabase Auth によるメールアドレス・パスワードログイン
+- 暗号化CookieとSupabase refresh tokenローテーションによる30日間のログイン保持
 - `admin` / `viewer` の権限分離
 - ana-slo日別URLの検証、requests取得、403時のPlaywright fallback
 - 保存HTMLアップロード解析、コピー本文貼り付け解析、複数日分の一括本文取込
@@ -70,7 +71,12 @@ anon_key = "your-anon-key"
 service_role_key = "your-service-role-key-for-server-side-admin-only"
 
 APP_ADMIN_EMAILS = "your-admin@example.com"
+SESSION_COOKIE_SECRET = "十分に長いランダムな秘密文字列"
 ```
+
+`SESSION_COOKIE_SECRET` はブラウザCookie内のrefresh tokenを暗号化するサーバー専用秘密鍵です。
+未設定時は既存の `SUPABASE_SERVICE_ROLE_KEY` を鍵材料として使用します。どちらもGitHubへコミットしないでください。
+CookieはSecure/SameSite=Strictで30日後に失効し、ログアウト時に削除されます。
 
 Streamlit Community Cloud では、アプリの `Settings > Secrets` に同じ内容を貼り付けます。
 

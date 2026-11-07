@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+from types import SimpleNamespace
 
 import auth
 import config
@@ -43,6 +44,54 @@ def test_permission_checks():
     assert auth.can("viewer", "view_analysis")
     assert not auth.can("viewer", "delete_data")
     assert not auth.can(None, "view_analysis")
+
+
+def test_persistent_cookie_encrypts_and_expires(monkeypatch):
+    monkeypatch.setenv("SESSION_COOKIE_SECRET", "test-only-secret-with-enough-entropy")
+    encoded = auth._encode_refresh_token("refresh-token-value")
+
+    assert "refresh-token-value" not in encoded
+    assert auth._decode_refresh_token(encoded) == "refresh-token-value"
+
+
+def test_restore_session_rotates_cookie(monkeypatch):
+    monkeypatch.setenv("SESSION_COOKIE_SECRET", "test-only-secret-with-enough-entropy")
+    cookie = auth._encode_refresh_token("old-refresh-token")
+
+    class FakeCookieManager:
+        def __init__(self):
+            self.values = {auth.SESSION_COOKIE_NAME: cookie}
+
+        def get(self, name):
+            return self.values.get(name)
+
+        def set(self, name, value, **_kwargs):
+            self.values[name] = value
+
+        def delete(self, name, **_kwargs):
+            self.values.pop(name, None)
+
+    manager = FakeCookieManager()
+    response = SimpleNamespace(
+        session=SimpleNamespace(access_token="new-access-token", refresh_token="new-refresh-token"),
+        user=SimpleNamespace(id="user-id", email="user@example.com"),
+    )
+
+    class FakeAuth:
+        def refresh_session(self, token):
+            assert token == "old-refresh-token"
+            return response
+
+    monkeypatch.setattr(auth, "_get_cookie_manager", lambda: manager)
+    monkeypatch.setattr(database, "get_supabase_client", lambda: SimpleNamespace(auth=FakeAuth()))
+    monkeypatch.setattr(auth, "ensure_profile", lambda user_id, email: {"id": user_id, "email": email, "role": "admin"})
+    auth.st.session_state.clear()
+
+    profile = auth.restore_session()
+
+    assert profile["role"] == "admin"
+    assert auth.st.session_state["access_token"] == "new-access-token"
+    assert auth._decode_refresh_token(manager.values[auth.SESSION_COOKIE_NAME]) == "new-refresh-token"
 
 
 def test_sign_in_distinguishes_dns_error(monkeypatch):

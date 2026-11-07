@@ -44,6 +44,7 @@ _SUPABASE_SECRET_ALIASES = {
     "SUPABASE_ANON_KEY": ("anon_key", "SUPABASE_ANON_KEY"),
     "SUPABASE_SERVICE_ROLE_KEY": ("service_role_key", "SUPABASE_SERVICE_ROLE_KEY"),
     "APP_ADMIN_EMAILS": ("APP_ADMIN_EMAILS", "admin_emails"),
+    "SESSION_COOKIE_SECRET": ("SESSION_COOKIE_SECRET", "session_cookie_secret"),
 }
 
 
@@ -182,4 +183,21 @@ def get_supabase_settings(require_service_role: bool = False) -> SupabaseSetting
 def get_admin_emails() -> set[str]:
     raw = get_secret("APP_ADMIN_EMAILS", "") or ""
     return {email.strip().lower() for email in raw.split(",") if email.strip()}
+
+
+def get_session_cookie_secret() -> str:
+    """Return server-only key material used to encrypt persistent sessions.
+
+    A dedicated secret is preferred. Existing deployments can use the already
+    server-only service-role key as key material until SESSION_COOKIE_SECRET is
+    configured. Rotating either value invalidates existing login cookies.
+    """
+
+    secret = get_secret("SESSION_COOKIE_SECRET") or get_secret("SUPABASE_SERVICE_ROLE_KEY")
+    if not secret:
+        raise RuntimeError(
+            "SESSION_COOKIE_SECRET または SUPABASE_SERVICE_ROLE_KEY が設定されていないため、"
+            "ログイン状態を安全に保存できません。"
+        )
+    return secret
 
